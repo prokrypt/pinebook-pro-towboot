@@ -1,0 +1,40 @@
+From 5e0a045af3756492813e13f449793535217ae5ee Mon Sep 17 00:00:00 2001
+From: Dan Carpenter <dan.carpenter@linaro.org>
+Date: Thu, 3 Aug 2023 13:29:34 +0300
+Subject: [PATCH 2/7] btrfs: fix some error checking for btrfs_decompress()
+
+The btrfs_decompress() function mostly (u32)-1 on error but it can
+also return -EPERM or other kernel error codes from zstd_decompress().
+The "ret" variable is an int, so we could just check for negatives.
+
+Signed-off-by: Dan Carpenter <dan.carpenter@linaro.org>
+Reviewed-by: Qu Wenruo <wqu@suse.com>
+---
+ fs/btrfs/inode.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/fs/btrfs/inode.c b/fs/btrfs/inode.c
+index 38e285bf..4691612e 100644
+--- a/fs/btrfs/inode.c
++++ b/fs/btrfs/inode.c
+@@ -390,7 +390,7 @@ int btrfs_read_extent_inline(struct btrfs_path *path,
+ 			   csize);
+ 	ret = btrfs_decompress(btrfs_file_extent_compression(leaf, fi),
+ 			       cbuf, csize, dbuf, dsize);
+-	if (ret == (u32)-1) {
++	if (ret < 0) {
+ 		ret = -EIO;
+ 		goto out;
+ 	}
+@@ -500,7 +500,7 @@ int btrfs_read_extent_reg(struct btrfs_path *path,
+ 
+ 	ret = btrfs_decompress(btrfs_file_extent_compression(leaf, fi), cbuf,
+ 			       csize, dbuf, dsize);
+-	if (ret == (u32)-1) {
++	if (ret < 0) {
+ 		ret = -EIO;
+ 		goto out;
+ 	}
+-- 
+2.56.0
+

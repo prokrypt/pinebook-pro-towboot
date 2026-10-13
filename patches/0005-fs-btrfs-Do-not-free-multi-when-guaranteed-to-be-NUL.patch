@@ -1,0 +1,35 @@
+From a6da5fd9b27c4146208ee50a80d34c47f3635aa0 Mon Sep 17 00:00:00 2001
+From: Andrew Goodbody <andrew.goodbody@linaro.org>
+Date: Tue, 8 Jul 2025 12:34:49 +0100
+Subject: [PATCH 5/7] fs: btrfs: Do not free multi when guaranteed to be NULL
+
+multi is guaranteed to be NULL in the first two error exit paths so the
+attempt to free it is not needed. Remove those calls.
+
+This issue found by Smatch.
+
+Signed-off-by: Andrew Goodbody <andrew.goodbody@linaro.org>
+---
+ fs/btrfs/volumes.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/fs/btrfs/volumes.c b/fs/btrfs/volumes.c
+index 7d4095d9..32375787 100644
+--- a/fs/btrfs/volumes.c
++++ b/fs/btrfs/volumes.c
+@@ -973,12 +973,10 @@ int __btrfs_map_block(struct btrfs_fs_info *fs_info, int rw,
+ again:
+ 	ce = search_cache_extent(&map_tree->cache_tree, logical);
+ 	if (!ce) {
+-		kfree(multi);
+ 		*length = (u64)-1;
+ 		return -ENOENT;
+ 	}
+ 	if (ce->start > logical) {
+-		kfree(multi);
+ 		*length = ce->start - logical;
+ 		return -ENOENT;
+ 	}
+-- 
+2.56.0
+

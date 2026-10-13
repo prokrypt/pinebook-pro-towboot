@@ -1,0 +1,87 @@
+From 4eab323f96758d45265da20cf6d3e2477c2953bf Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Tue, 13 Oct 2026 14:59:31 -0700
+Subject: [PATCH] pinebook-pro: dim the backlight and turn it off at kernel
+ handoff
+
+Tow-Boot leaves the eDP panel lit at full brightness when it starts the
+kernel. About 1.5 s into boot Linux turns off unused clocks and power
+domains, which kills the video signal while the backlight stays on, and
+the panel shows garbage until the display driver sets it up again ~1 s
+later.
+
+Turn the backlight PWM (pwm@ff420000) off in board_quiesce_devices(),
+which runs right before "Starting kernel" for booti/bootm and EFI boots.
+Linux's pwm-backlight then probes with a disabled PWM and keeps the
+backlight off until panel-edp enables it with the display running, so
+the screen stays dark instead of showing garbage.
+
+Also set default-brightness-level to 40/255 for the Tow-Boot screen
+(the DT backlight has no brightness-levels, so U-Boot used 255).
+
+Downside: if the kernel dies before the display driver loads, the screen
+stays dark.
+---
+ arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi   |  5 +++++
+ .../pinebook-pro-rk3399/pinebook-pro-rk3399.c  | 18 ++++++++++++++++++
+ 2 files changed, 23 insertions(+)
+
+diff --git a/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi b/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
+index ea7a5a17..163e5010 100644
+--- a/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
++++ b/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
+@@ -16,6 +16,11 @@
+ 	};
+ };
+ 
++&backlight {
++	/* 0-255, no brightness-levels; stock U-Boot uses 255 */
++	default-brightness-level = <40>;
++};
++
+ &edp {
+ 	rockchip,panel = <&edp_panel>;
+ };
+diff --git a/board/pine64/pinebook-pro-rk3399/pinebook-pro-rk3399.c b/board/pine64/pinebook-pro-rk3399/pinebook-pro-rk3399.c
+index 41ea4b5e..f3505cb1 100644
+--- a/board/pine64/pinebook-pro-rk3399/pinebook-pro-rk3399.c
++++ b/board/pine64/pinebook-pro-rk3399/pinebook-pro-rk3399.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <common.h>
++#include <bootm.h>
+ #include <dm.h>
+ #include <spl_gpio.h>
+ #include <syscon.h>
+@@ -16,6 +17,7 @@
+ #include <asm/arch-rockchip/hardware.h>
+ #include <asm/arch-rockchip/misc.h>
+ #include <power/regulator.h>
++#include <pwm.h>
+ 
+ #define GRF_IO_VSEL_BT565_SHIFT 0
+ #define PMUGRF_CON0_VSEL_SHIFT 8
+@@ -105,3 +107,19 @@ int misc_init_r(void)
+ 	return ret;
+ }
+ #endif
++
++#ifndef CONFIG_SPL_BUILD
++/*
++ * Turn the backlight off right before handing over to the OS. Linux's
++ * pwm-backlight then sees a disabled PWM and keeps the backlight off until
++ * the panel driver has the display running, which hides the garbage shown
++ * between "clk: Disabling unused clocks" and the display driver starting.
++ */
++void board_quiesce_devices(void)
++{
++	struct udevice *pwm;
++
++	if (!uclass_get_device_by_name(UCLASS_PWM, "pwm@ff420000", &pwm))
++		pwm_set_enable(pwm, 0, false);
++}
++#endif
+-- 
+2.56.0
+

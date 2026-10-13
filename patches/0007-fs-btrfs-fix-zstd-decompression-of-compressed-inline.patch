@@ -1,0 +1,90 @@
+From 27d5b1406e00e44892d2aac586c506eb4b666885 Mon Sep 17 00:00:00 2001
+From: Cole Munz <Munzzyy1@proton.me>
+Date: Sat, 1 Aug 2026 00:55:20 +0000
+Subject: [PATCH 7/7] fs: btrfs: fix zstd decompression of compressed inline
+ extents
+
+The kernel compresses an inline extent as a whole block:
+run_delalloc_inline() calls btrfs_compress_bio(inode, 0, blocksize, ...),
+so the data is zero-filled past EOF and the resulting zstd frame declares
+a content size of one block. The extent item records the unaligned file
+size though - __cow_file_range_inline() passes i_size down to
+insert_inline_extent(), which stores it as ram_bytes.
+
+btrfs_read_extent_inline() sizes its decompression buffer from ram_bytes,
+so for a 1900-byte file the destination is 1900 bytes while the frame
+decodes to 4096. Since commit 918adf8e0733 ("btrfs: Use U-Boot API for
+decompression") btrfs decompresses through the common U-Boot helper,
+which uses the one-shot zstd_decompress_dctx(). That API requires the
+destination to cover the whole frame and fails with dstSize_tooSmall,
+error 70, otherwise. The streaming ZSTD_decompressStream() path it
+replaced stopped once the output buffer was full, so it never hit this.
+
+The kernel side does not notice because fs/btrfs/zstd.c streams into its
+own buffer and copies out at most destlen.
+
+Allocate a full block for the decompression buffer and copy only
+ram_bytes back to the caller. An inline extent never spans more than one
+block, which bounds the allocation.
+
+This shows up on RK3399 and ODROID-N2 as "zstd_decompress: failed to
+decompress: 70" (armbian/build#9651, #10208), where it breaks fdt apply
+on zstd-compressed overlays. Images built with mkfs.btrfs --rootdir
+--compress zstd do not reproduce it, since btrfs-progs writes a frame
+whose content size already equals ram_bytes. Only files written at
+runtime through the kernel trip it.
+
+Fixes: 918adf8e0733 ("btrfs: Use U-Boot API for decompression")
+Signed-off-by: Cole Munz <Munzzyy1@proton.me>
+Reviewed-by: Qu Wenruo <wqu@suse.com>
+---
+ fs/btrfs/inode.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/fs/btrfs/inode.c b/fs/btrfs/inode.c
+index 3998ffc2..53f1059e 100644
+--- a/fs/btrfs/inode.c
++++ b/fs/btrfs/inode.c
+@@ -362,9 +362,11 @@ int btrfs_read_extent_inline(struct btrfs_path *path,
+ 			     struct btrfs_file_extent_item *fi, char *dest)
+ {
+ 	struct extent_buffer *leaf = path->nodes[0];
++	struct btrfs_fs_info *fs_info = leaf->fs_info;
+ 	int slot = path->slots[0];
+ 	char *cbuf = NULL;
+ 	char *dbuf = NULL;
++	u32 dbuf_size;
+ 	u32 csize;
+ 	u32 dsize;
+ 	int ret;
+@@ -380,8 +382,17 @@ int btrfs_read_extent_inline(struct btrfs_path *path,
+ 
+ 	/* Compressed extent, prepare the compressed and data buffer */
+ 	dsize = btrfs_file_extent_ram_bytes(leaf, fi);
++	/*
++	 * The kernel compresses an inline extent as a whole block, zero-filling
++	 * the tail past EOF, so the stream can decompress to more than
++	 * ram_bytes.  zstd's one-shot API rejects a destination that cannot
++	 * hold the entire frame, so give the decompressor a full block and copy
++	 * only ram_bytes back out.  An inline extent never spans more than one
++	 * block, which bounds the allocation.
++	 */
++	dbuf_size = max_t(u32, dsize, fs_info->sectorsize);
+ 	cbuf = malloc(csize);
+-	dbuf = malloc(dsize);
++	dbuf = malloc(dbuf_size);
+ 	if (!cbuf || !dbuf) {
+ 		ret = -ENOMEM;
+ 		goto out;
+@@ -389,7 +400,7 @@ int btrfs_read_extent_inline(struct btrfs_path *path,
+ 	read_extent_buffer(leaf, cbuf, btrfs_file_extent_inline_start(fi),
+ 			   csize);
+ 	ret = btrfs_decompress(btrfs_file_extent_compression(leaf, fi),
+-			       cbuf, csize, dbuf, dsize);
++			       cbuf, csize, dbuf, dbuf_size);
+ 	if (ret < 0) {
+ 		ret = -EIO;
+ 		goto out;
+-- 
+2.56.0
+

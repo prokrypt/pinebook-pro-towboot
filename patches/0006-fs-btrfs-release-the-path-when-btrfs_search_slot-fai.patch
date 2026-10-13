@@ -1,0 +1,69 @@
+From bfc4e5a8861237b3947456836a60f3324db9c358 Mon Sep 17 00:00:00 2001
+From: Cole Munz <Munzzyy1@proton.me>
+Date: Sun, 2 Aug 2026 09:35:22 +0000
+Subject: [PATCH 6/7] fs: btrfs: release the path when btrfs_search_slot()
+ fails
+
+The U-Boot copy of btrfs_search_slot() returns on error with the nodes
+it has descended through still attached to the path. The kernel one
+releases the path on any error unless p->skip_release_on_error is set,
+and callers written against that convention treat a failed search as
+owning nothing. btrfs_size() is one: it returns straight away on a
+search error and never reaches its btrfs_release_path() call, so the
+attached extent buffer references leak.
+
+Route both error exits through a release of the path. The error
+returns of read_node_slot() carry no extra reference, so the path is
+the only thing to clean up.
+
+Suggested-by: Qu Wenruo <quwenruo.btrfs@gmx.com>
+Signed-off-by: Cole Munz <Munzzyy1@proton.me>
+Reviewed-by: Qu Wenruo <wqu@suse.com>
+---
+ fs/btrfs/ctree.c | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/fs/btrfs/ctree.c b/fs/btrfs/ctree.c
+index 8e932adc..48c50e55 100644
+--- a/fs/btrfs/ctree.c
++++ b/fs/btrfs/ctree.c
+@@ -425,8 +425,10 @@ int btrfs_search_slot(struct btrfs_trans_handle *trans,
+ 		level = btrfs_header_level(b);
+ 		p->nodes[level] = b;
+ 		ret = check_block(fs_info, p, level);
+-		if (ret)
+-			return -1;
++		if (ret) {
++			ret = -1;
++			goto err;
++		}
+ 		ret = btrfs_bin_search(b, key, &slot);
+ 		if (level != 0) {
+ 			if (ret && slot > 0)
+@@ -461,8 +463,10 @@ int btrfs_search_slot(struct btrfs_trans_handle *trans,
+ 				break;
+ 
+ 			b = read_node_slot(fs_info, b, slot);
+-			if (!extent_buffer_uptodate(b))
+-				return -EIO;
++			if (!extent_buffer_uptodate(b)) {
++				ret = -EIO;
++				goto err;
++			}
+ 		} else {
+ 			p->slots[level] = slot;
+ 			/*
+@@ -479,6 +483,10 @@ int btrfs_search_slot(struct btrfs_trans_handle *trans,
+ 		}
+ 	}
+ 	return 1;
++
++err:
++	btrfs_release_path(p);
++	return ret;
+ }
+ 
+ /*
+-- 
+2.56.0
+
