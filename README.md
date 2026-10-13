@@ -6,8 +6,8 @@ What it fixes or adds:
 
 - **No more garbage on screen at boot.** The screen stays dark from "Starting kernel" until the desktop.
 - **A dimmer Tow-Boot screen.** The stock build runs the backlight at 100%.
-- **`/boot` on btrfs** (pbp2, *untested*). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
-- **Boot timing you can read from Linux** (pbp2). Tow-Boot's timings show up in `/proc/device-tree/bootstage`.
+- **`/boot` on btrfs** (*in progress*: the first build, pbp2, didn't start; see Versions). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
+- **Boot timing you can read from Linux** (*withdrawn*: the likely cause of pbp2's failure). Tow-Boot's timings show up in `/proc/device-tree/bootstage`.
 - **Device-tree overlays.** `FDTOVERLAYS` in `extlinux.conf` works. Stock Tow-Boot is built without overlay support and silently ignores it.
 - A 1 s boot menu countdown instead of 2 s.
 
@@ -20,9 +20,11 @@ Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot
 | Version | Status | What's in it |
 |---|---|---|
 | **007-pbp1** | Tested, in daily use on my Pinebook Pro | Backlight fix, dimmer screen, overlays, 1 s countdown |
-| **007-pbp2** | **Built but not tested yet** | pbp1 + btrfs + boot timing |
+| ~~007-pbp2~~ | **Broken, withdrawn**: black screen at power-on, needed a maskrom recovery | pbp1 + btrfs + boot timing |
 
-Prebuilt images are on the [Releases](../../releases) page: `Tow-Boot.spi.bin` (to flash from Linux) and `spi.installer.img` (SD card installer), with SHA-256 sums. pbp2 is marked as a pre-release until it's been tested.
+Prebuilt images are on the [Releases](../../releases) page: `Tow-Boot.spi.bin` (to flash from Linux) and `spi.installer.img` (SD card installer), with SHA-256 sums.
+
+> **007-pbp2 does not start** (black screen from power-on; tested 2026-10-13, SPI restored with maskrom). Its files were removed. The likely cause is `CONFIG_BOOTSTAGE`: U-Boot's `global_data` has an `#ifdef CONFIG_BOOTSTAGE` that isn't TPL/SPL-aware, so turning it on changes the early boot stages too, and it allocates from the small pre-relocation heap before the display is up. btrfs is being rebuilt without it, and **will be tested by chainloading from a working Tow-Boot before anything is released again**. Don't build `nix/pbp2.nix` as it is.
 
 ## The changes in detail
 
@@ -70,7 +72,7 @@ The btrfs code in U-Boot 2023.07 has bugs that were fixed later in U-Boot master
 Notes:
 - I checked the feature flags of a filesystem made with btrfs-progs 7.1 (`extref`, `skinny-metadata`, `no-holes`, `free-space-tree`, `block-group-tree`, zstd) against what U-Boot supports: all fine. `block-group-tree` works because U-Boot never reads block groups. Features U-Boot doesn't know (for example `raid-stripe-tree`, `extent-tree-v2`, `simple-quota`) make it refuse to open the filesystem.
 - As with ext4, Tow-Boot only scans partitions with the MBR **bootable flag**. If none has the flag, it only scans partition 1.
-- **Status: built, not tested on hardware yet.** I'll update this page once it has booted.
+- **Status: the pbp2 build didn't start** (see Versions), most likely because of boot timing, not btrfs. Not usable yet.
 
 ### Boot timing (pbp2)
 

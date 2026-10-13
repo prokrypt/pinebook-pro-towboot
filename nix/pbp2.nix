@@ -1,4 +1,5 @@
 # 007-pbp2: everything in pbp1, plus
+# BROKEN: this build does not start (black screen, needed maskrom recovery). Kept for reference; see README.
 #  - btrfs support (/boot can live on btrfs), with fixes backported from
 #    U-Boot master (patches 0002-0007)
 #  - boot timing handed to the kernel in /proc/device-tree/bootstage
