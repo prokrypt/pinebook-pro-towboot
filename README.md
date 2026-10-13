@@ -7,7 +7,7 @@ What it fixes or adds:
 - **No more garbage on screen at boot.** The screen stays dark from "Starting kernel" until the desktop.
 - **A dimmer Tow-Boot screen.** The stock build runs the backlight at 100%.
 - **`/boot` on btrfs** (*in progress*: the first build, pbp2, didn't start; see Versions). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
-- **Boot timing you can read from Linux** (*withdrawn*: the likely cause of pbp2's failure). Tow-Boot's timings show up in `/proc/device-tree/bootstage`.
+- **Boot timing you can read from Linux** (*in progress*, together with btrfs). Tow-Boot's timings show up in `/proc/device-tree/bootstage`.
 - **Device-tree overlays.** `FDTOVERLAYS` in `extlinux.conf` works. Stock Tow-Boot is built without overlay support and silently ignores it.
 - A 1 s boot menu countdown instead of 2 s.
 
@@ -24,7 +24,7 @@ Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot
 
 Prebuilt images are on the [Releases](../../releases) page: `Tow-Boot.spi.bin` (to flash from Linux) and `spi.installer.img` (SD card installer), with SHA-256 sums.
 
-> **007-pbp2 does not start** (black screen from power-on; tested 2026-10-13, SPI restored with maskrom). Its files were removed. The likely cause is `CONFIG_BOOTSTAGE`: U-Boot's `global_data` has an `#ifdef CONFIG_BOOTSTAGE` that isn't TPL/SPL-aware, so turning it on changes the early boot stages too, and it allocates from the small pre-relocation heap before the display is up. btrfs is being rebuilt without it, and **will be tested by chainloading from a working Tow-Boot before anything is released again**. Don't build `nix/pbp2.nix` as it is.
+> **007-pbp2 does not start** (black screen from power-on, red LED; SPI restored with maskrom). Its files were removed. A btrfs-only build (pbp2b) failed the same way. **Cause: the image grew past a memory limit in U-Boot 2023.07.** U-Boot proper is loaded at `0x200000` with its device tree right after it, and at start-up it puts its stack, early heap (16 KB) and global data just below `CONFIG_CUSTOM_SYS_INIT_SP_ADDR=0x300000`. When booting from SPI, SPL also grows the device tree by 8 KB (`fdt_shrink_to_minimum(..., 8192)` in `common/spl/spl_fit.c`). pbp1 ends at `0x2EA530` (plus 8 KB), but with btrfs the device tree runs into the early heap and gets overwritten. Upstream U-Boot has since moved this stack to `0x03f00000` on Rockchip. (An earlier version of this page blamed `CONFIG_BOOTSTAGE`; that was wrong.) A fixed build will only be released after it has booted from SPI. Don't build `nix/pbp2.nix` as it is.
 
 ## The changes in detail
 
@@ -72,7 +72,7 @@ The btrfs code in U-Boot 2023.07 has bugs that were fixed later in U-Boot master
 Notes:
 - I checked the feature flags of a filesystem made with btrfs-progs 7.1 (`extref`, `skinny-metadata`, `no-holes`, `free-space-tree`, `block-group-tree`, zstd) against what U-Boot supports: all fine. `block-group-tree` works because U-Boot never reads block groups. Features U-Boot doesn't know (for example `raid-stripe-tree`, `extent-tree-v2`, `simple-quota`) make it refuse to open the filesystem.
 - As with ext4, Tow-Boot only scans partitions with the MBR **bootable flag**. If none has the flag, it only scans partition 1.
-- **Status: the pbp2 build didn't start** (see Versions), most likely because of boot timing, not btrfs. Not usable yet.
+- **Status: the pbp2 build didn't start** (see Versions): adding btrfs made the image too big for U-Boot 2023.07's early memory layout. Reading btrfs itself works (tested by chainloading). Not usable yet.
 
 ### Boot timing (pbp2)
 
