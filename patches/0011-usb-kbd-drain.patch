@@ -1,0 +1,137 @@
+From d5a5cddd33f7d5d9bee053ae5a502b5c994593ed Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Tue, 13 Oct 2026 20:00:42 -0700
+Subject: [PATCH] usb: kbd: drain the other interrupt endpoint of a composite
+ keyboard
+
+The Pinebook Pro's internal keyboard and touchpad are one USB device:
+interface 0 is a boot keyboard (EP 0x81), interface 1 a generic HID
+interface for the touchpad (EP 0x82). usb_kbd only polls the keyboard
+endpoint. Once the touchpad is touched, its report sits unread and the
+device stops sending keyboard reports as well, so the keyboard seems
+frozen until "usb reset" (Tow-Boot issue #57).
+
+With CONFIG_SYS_USB_EVENT_POLL_VIA_INT_QUEUE, also set up an interrupt
+queue for the first interrupt IN endpoint found on another interface of
+the keyboard's device, and read and throw away whatever arrives on it
+each time the keyboard is polled.
+---
+ common/usb_kbd.c | 74 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 74 insertions(+)
+
+diff --git a/common/usb_kbd.c b/common/usb_kbd.c
+index b8414e2b..d53e8875 100644
+--- a/common/usb_kbd.c
++++ b/common/usb_kbd.c
+@@ -107,6 +107,16 @@ struct usb_kbd_pdata {
+ 	unsigned long	last_report;
+ 	struct int_queue *intq;
+ 
++	/*
++	 * Another interrupt IN endpoint on the same device (e.g. the touchpad
++	 * of a laptop keyboard), read and thrown away; see usb_kbd_drain().
++	 */
++	unsigned long	drainpipe;
++	int		drainsize;
++	int		draininterval;
++	struct int_queue *drainq;
++	uint8_t		*drainbuf;
++
+ 	uint32_t	repeat_delay;
+ 
+ 	uint32_t	usb_in_pointer;
+@@ -351,6 +361,61 @@ static int usb_kbd_irq(struct usb_device *dev)
+ 	return usb_kbd_irq_worker(dev);
+ }
+ 
++#ifdef CONFIG_SYS_USB_EVENT_POLL_VIA_INT_QUEUE
++/*
++ * Read and throw away whatever arrived on the device's other interrupt
++ * endpoint. The Pinebook Pro's keyboard and touchpad are one USB device;
++ * once the touchpad has a report waiting that nobody reads, the device
++ * stops sending keyboard reports too, and the keyboard seems frozen until
++ * "usb reset" (Tow-Boot issue #57).
++ */
++static void usb_kbd_drain(struct usb_device *dev, struct usb_kbd_pdata *data)
++{
++	if (!data->drainq || !poll_int_queue(dev, data->drainq))
++		return;
++	destroy_int_queue(dev, data->drainq);
++	data->drainq = create_int_queue(dev, data->drainpipe, 1,
++					data->drainsize, data->drainbuf,
++					data->draininterval);
++}
++
++/* Find another interrupt IN endpoint on another interface of the device */
++static void usb_kbd_setup_drain(struct usb_device *dev,
++				struct usb_kbd_pdata *data, unsigned int kbd_if)
++{
++	struct usb_endpoint_descriptor *ep;
++	struct usb_interface *iface;
++	int i, e;
++
++	for (i = 0; i < dev->config.desc.bNumInterfaces; i++) {
++		if (i == kbd_if)
++			continue;
++		iface = &dev->config.if_desc[i];
++		for (e = 0; e < iface->desc.bNumEndpoints; e++) {
++			ep = &iface->ep_desc[e];
++			if ((ep->bmAttributes & 3) != 3 ||
++			    !(ep->bEndpointAddress & 0x80))
++				continue;
++			data->drainpipe = usb_rcvintpipe(dev,
++							 ep->bEndpointAddress);
++			data->drainsize = usb_maxpacket(dev, data->drainpipe);
++			data->draininterval = ep->bInterval;
++			data->drainbuf = memalign(USB_DMA_MINALIGN,
++				roundup(data->drainsize, USB_DMA_MINALIGN));
++			if (!data->drainbuf)
++				return;
++			data->drainq = create_int_queue(dev, data->drainpipe, 1,
++							data->drainsize,
++							data->drainbuf,
++							data->draininterval);
++			debug("USB KBD: draining interrupt EP 0x%x of interface %d\n",
++			      ep->bEndpointAddress, i);
++			return;
++		}
++	}
++}
++#endif
++
+ /* Interrupt polling */
+ static inline void usb_kbd_poll_for_event(struct usb_device *dev)
+ {
+@@ -373,6 +438,8 @@ static inline void usb_kbd_poll_for_event(struct usb_device *dev)
+ 		usb_kbd_irq_worker(dev);
+ #else
+ 	struct usb_kbd_pdata *data = dev->privptr;
++
++	usb_kbd_drain(dev, data);
+ 	if (poll_int_queue(dev, data->intq)) {
+ 		usb_kbd_irq_worker(dev);
+ 		/* We've consumed all queued int packets, create new */
+@@ -564,6 +631,10 @@ static int usb_kbd_probe_dev(struct usb_device *dev, unsigned int ifnum)
+ 		return 0;
+ 	}
+ 
++#ifdef CONFIG_SYS_USB_EVENT_POLL_VIA_INT_QUEUE
++	usb_kbd_setup_drain(dev, data, ifnum);
++#endif
++
+ 	/* Success. */
+ 	return 1;
+ }
+@@ -710,6 +781,9 @@ static int usb_kbd_remove(struct udevice *dev)
+ 	}
+ #ifdef CONFIG_SYS_USB_EVENT_POLL_VIA_INT_QUEUE
+ 	destroy_int_queue(udev, data->intq);
++	if (data->drainq)
++		destroy_int_queue(udev, data->drainq);
++	free(data->drainbuf);
+ #endif
+ 	free(data->new);
+ 	free(data);
+-- 
+2.56.0
+

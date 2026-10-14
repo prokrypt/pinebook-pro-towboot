@@ -9,6 +9,7 @@ What it fixes or adds:
 - **`/boot` on btrfs** (pbp2c). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
 - **Device-tree overlays.** `FDTOVERLAYS` in `extlinux.conf` works. Stock Tow-Boot is built without overlay support and silently ignores it.
 - **Faster boot** (pbp2f): only the internal keyboard's USB controller is started at power-on, about 5.7 s quicker on my Pinebook Pro. "Rescan USB" and "Boot from USB" still use every port.
+- **The touchpad no longer freezes the keyboard** in the Tow-Boot menu (pbp2i; a bug in stock Tow-Boot since 2021, [Tow-Boot#57](https://github.com/Tow-Boot/Tow-Boot/issues/57)).
 - **Faster SD card** (pbp2g and later): 50 MHz instead of 20 MHz in Tow-Boot, so booting from SD loads about 65% faster.
 - A 1 s boot menu countdown instead of 2 s.
 
@@ -20,7 +21,8 @@ Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot
 
 | Version | Status | What's in it |
 |---|---|---|
-| **007-pbp2h** | **Tested**: in use on my Pinebook Pro since 2026-10-13 | pbp2f + SD at 50 MHz + one more btrfs fix (0010); version labels fixed |
+| **007-pbp2i** | **Tested**: in use on my Pinebook Pro since 2026-10-13 | pbp2h + **touchpad no longer freezes the keyboard** in the menu (0011, fixes Tow-Boot#57) |
+| 007-pbp2h | Tested 2026-10-13 | pbp2f + SD at 50 MHz + one more btrfs fix (0010); version labels fixed |
 | 007-pbp2f | Tested: in use on my Pinebook Pro 2026-10-13 | pbp2c + faster USB start |
 | 007-pbp2c | Tested: boots from SPI (2026-10-13), btrfs reading tested | pbp1 + btrfs, with U-Boot's start-up stack moved (see below) |
 | 007-pbp1 | Tested, in daily use 2026-10-13 | Backlight fix, dimmer screen, overlays, 1 s countdown |
@@ -126,6 +128,12 @@ U-Boot's Pinebook Pro device tree caps the SD card at 20 MHz (and the eMMC at 25
 
 The change also lands in TPL's and SPL's device trees (the `sdmmc` node is in all phases), but they don't touch the SD card when booting from SPI. The eMMC cap (25 MHz, ~22 MiB/s) is unchanged.
 
+### Touchpad froze the keyboard (pbp2i, patch 0011)
+
+The Pinebook Pro's keyboard and touchpad are one USB device: interface 0 is a boot keyboard (interrupt endpoint `0x81`), interface 1 a generic HID interface for the touchpad (endpoint `0x82`). U-Boot's `usb_kbd` driver only ever polls `0x81`. Once the touchpad is touched, its report sits unread on `0x82`, and the keyboard chip then stops sending keyboard reports too, so the menu looked frozen until "Rescan USB" (which needs the keyboard...).
+
+Patch 0011 makes `usb_kbd` also set up an interrupt queue for the first interrupt-IN endpoint on another interface of the keyboard's device, and read and throw away whatever arrives on it each time the keyboard is polled. Only active with `CONFIG_SYS_USB_EVENT_POLL_VIA_INT_QUEUE` (Tow-Boot's setting); plain keyboards are unaffected. Tested: with pbp2h, touching the touchpad froze the keyboard; with pbp2i it keeps working.
+
 ### Device-tree overlays
 
 `CONFIG_OF_LIBFDT_OVERLAY=y`, so `FDTOVERLAYS /path/a.dtbo /path/b.dtbo` in an `extlinux.conf` entry is applied. Stock 2023.07-007 is built without it and silently ignores the line (the firmware contains the message `config with overlays but CONFIG_OF_LIBFDT_OVERLAY not set`). Overlays can only add or change properties, not delete them. If you need to delete one, merge the dtb yourself with `fdtoverlay` + `fdtput -d`.
@@ -167,7 +175,7 @@ If Tow-Boot starts but your OS doesn't, that's a boot config problem, not the fi
 
 These are open bugs in stock Tow-Boot on the Pinebook Pro, and this build has them too:
 
-- **Touching the touchpad freezes the keyboard in the Tow-Boot menu** ([Tow-Boot#57](https://github.com/Tow-Boot/Tow-Boot/issues/57)). It looks like a hang, but only keyboard input stops (a serial console keeps working). The internal keyboard and touchpad are one USB device. **Workaround: don't touch the touchpad while in the Tow-Boot menu or console**; if it happens, hold power and start again. I'm looking into a fix.
+- ~~Touching the touchpad freezes the keyboard in the Tow-Boot menu~~ ([Tow-Boot#57](https://github.com/Tow-Boot/Tow-Boot/issues/57)): **fixed in pbp2i**, see "Touchpad froze the keyboard" above. In older builds and stock Tow-Boot: don't touch the touchpad in the menu.
 - **"Rescan USB" sometimes reboots** ([Tow-Boot#141](https://github.com/Tow-Boot/Tow-Boot/issues/141)), intermittently. I've also seen a spontaneous reboot right after pressing Enter in the console.
 - **External USB keyboards don't work in the menu** ([Tow-Boot#153](https://github.com/Tow-Boot/Tow-Boot/issues/153)).
 
@@ -185,7 +193,7 @@ These hold for stock Tow-Boot 2023.07-007 and this build:
 ## Building
 
 ```sh
-scripts/build.sh pbp2h     # or pbp2f, pbp2c, pbp1
+scripts/build.sh pbp2i     # or pbp2h, pbp2f, pbp2c, pbp1
 ```
 
 It checks out Tow-Boot `release-2023.07-007` (which builds [Tow-Boot/U-Boot](https://github.com/Tow-Boot/U-Boot) tag `tb-2023.07-007`) into `build/`, applies the patches and config from `nix/<variant>.nix`, puts the results in `out/<variant>/`, and runs `scripts/check-layout.sh` on the image. It uses `nix-build` if you have Nix. Otherwise it runs Nix in a `podman`/`docker` container, with the Nix store kept in a volume called `towboot-nix`. It cross-compiles on x86_64; the first build takes a while.
