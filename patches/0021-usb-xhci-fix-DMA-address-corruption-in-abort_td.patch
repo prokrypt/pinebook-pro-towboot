@@ -1,0 +1,66 @@
+From 6bac3ffe695a8ac307d824e3748bcc0d534529b3 Mon Sep 17 00:00:00 2001
+From: ANANDHAKRISHNAN S <anandhakrishnansasidharan@gmail.com>
+Date: Thu, 22 Jan 2026 10:57:54 +0530
+Subject: [PATCH 21/22] usb: xhci: fix DMA address corruption in abort_td
+
+When aborting a Transfer Descriptor (TD), the xHCI driver updates the
+device dequeue pointer by converting the virtual enqueue TRB pointer
+into a DMA address.
+
+Previously, the code OR-ed the ring's Dequeue Cycle State (DCS) bit into
+the virtual TRB pointer before passing it to xhci_trb_virt_to_dma().
+This produced an unaligned virtual address (e.g. ending in 0x...1).
+
+Inside xhci_trb_virt_to_dma(), the offset calculation:
+
+segment_offset = trb - seg->trbs;
+
+operated on this unaligned pointer, resulting in an incorrect TRB index.
+In wraparound cases, this caused the bounds check to fail and the
+function to return 0.
+
+As a result, a SET_DEQ_PTR command was issued with a DMA address of 0x0,
+leading to controller hangs and transfer timeouts, most commonly when
+aborting TDs near the end of a ring segment (e.g. index 63).
+
+Fix this by translating the aligned virtual TRB pointer to a DMA address
+first, and only then applying the DCS bit to the resulting physical
+address.
+
+Reviewed-by: Marek Vasut <marek.vasut@mailbox.org>
+Signed-off-by: ANANDHAKRISHNAN S <anandhakrishnan.s@dicortech.com>
+
+[Backported to Tow-Boot 2023.07: context differs, same change.]
+---
+ drivers/usb/host/xhci-ring.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/usb/host/xhci-ring.c b/drivers/usb/host/xhci-ring.c
+index 910c5f33..cb2948f7 100644
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -524,8 +524,8 @@ static void reset_ep(struct usb_device *udev, int ep_index)
+ 	BUG_ON(TRB_TO_SLOT_ID(field) != udev->slot_id);
+ 	xhci_acknowledge_event(ctrl);
+ 
+-	addr = xhci_trb_virt_to_dma(ring->enq_seg,
+-		(void *)((uintptr_t)ring->enqueue | ring->cycle_state));
++	addr = xhci_trb_virt_to_dma(ring->enq_seg, ring->enqueue) |
++		ring->cycle_state;
+ 	xhci_queue_command(ctrl, addr, udev->slot_id, ep_index, TRB_SET_DEQ);
+ 	event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
+ 	if (!event)
+@@ -586,8 +586,8 @@ static void abort_td(struct usb_device *udev, int ep_index)
+ 		!= COMP_CTX_STATE));
+ 	xhci_acknowledge_event(ctrl);
+ 
+-	addr = xhci_trb_virt_to_dma(ring->enq_seg,
+-		(void *)((uintptr_t)ring->enqueue | ring->cycle_state));
++	addr = xhci_trb_virt_to_dma(ring->enq_seg, ring->enqueue) |
++		ring->cycle_state;
+ 	xhci_queue_command(ctrl, addr, udev->slot_id, ep_index, TRB_SET_DEQ);
+ 	event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
+ 	if (!event)
+-- 
+2.56.0
+

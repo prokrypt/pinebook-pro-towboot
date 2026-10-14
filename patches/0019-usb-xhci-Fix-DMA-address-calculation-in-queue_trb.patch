@@ -1,0 +1,42 @@
+From 7d290e7be980ee328c5c6f7077c36eb70b40892d Mon Sep 17 00:00:00 2001
+From: Hector Martin <marcan@marcan.st>
+Date: Sun, 29 Oct 2023 15:37:44 +0900
+Subject: [PATCH 19/22] usb: xhci: Fix DMA address calculation in queue_trb
+
+We need to get the DMA address before incrementing the pointer, as that
+might move us onto another segment.
+
+Signed-off-by: Hector Martin <marcan@marcan.st>
+Reviewed-by: Marek Vasut <marex@denx.de>
+---
+ drivers/usb/host/xhci-ring.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/usb/host/xhci-ring.c b/drivers/usb/host/xhci-ring.c
+index ae0ab574..b60661fe 100644
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -202,6 +202,7 @@ static dma_addr_t queue_trb(struct xhci_ctrl *ctrl, struct xhci_ring *ring,
+ 			    bool more_trbs_coming, unsigned int *trb_fields)
+ {
+ 	struct xhci_generic_trb *trb;
++	dma_addr_t addr;
+ 	int i;
+ 
+ 	trb = &ring->enqueue->generic;
+@@ -211,9 +212,11 @@ static dma_addr_t queue_trb(struct xhci_ctrl *ctrl, struct xhci_ring *ring,
+ 
+ 	xhci_flush_cache((uintptr_t)trb, sizeof(struct xhci_generic_trb));
+ 
++	addr = xhci_trb_virt_to_dma(ring->enq_seg, (union xhci_trb *)trb);
++
+ 	inc_enq(ctrl, ring, more_trbs_coming);
+ 
+-	return xhci_trb_virt_to_dma(ring->enq_seg, (union xhci_trb *)trb);
++	return addr;
+ }
+ 
+ /**
+-- 
+2.56.0
+

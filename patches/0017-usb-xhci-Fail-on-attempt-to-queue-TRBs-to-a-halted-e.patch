@@ -1,0 +1,32 @@
+From 2e1141e1e58a28e8ab8a9d68f73cad41890229d5 Mon Sep 17 00:00:00 2001
+From: Hector Martin <marcan@marcan.st>
+Date: Sun, 29 Oct 2023 15:37:42 +0900
+Subject: [PATCH 17/22] usb: xhci: Fail on attempt to queue TRBs to a halted
+ endpoint
+
+This isn't going to work, don't pretend it will and then end up timing
+out.
+
+Signed-off-by: Hector Martin <marcan@marcan.st>
+Reviewed-by: Marek Vasut <marex@denx.de>
+---
+ drivers/usb/host/xhci-ring.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/usb/host/xhci-ring.c b/drivers/usb/host/xhci-ring.c
+index db8b8f20..a969eafd 100644
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -243,7 +243,8 @@ static int prepare_ring(struct xhci_ctrl *ctrl, struct xhci_ring *ep_ring,
+ 		puts("WARN waiting for error on ep to be cleared\n");
+ 		return -EINVAL;
+ 	case EP_STATE_HALTED:
+-		puts("WARN halted endpoint, queueing URB anyway.\n");
++		puts("WARN endpoint is halted\n");
++		return -EINVAL;
+ 	case EP_STATE_STOPPED:
+ 	case EP_STATE_RUNNING:
+ 		debug("EP STATE RUNNING.\n");
+-- 
+2.56.0
+

@@ -1,0 +1,108 @@
+From fdc9bfe2b36ef7a53ce8e503982def530df1fa5a Mon Sep 17 00:00:00 2001
+From: Hector Martin <marcan@marcan.st>
+Date: Sun, 29 Oct 2023 15:37:38 +0900
+Subject: [PATCH 13/22] usb: xhci: Guard all calls to xhci_wait_for_event
+
+xhci_wait_for_event returns NULL on timeout, so the caller always has to
+check for that. This addresses immediate explosions in this part
+of the code when timeouts happen, but not the root cause for the
+timeout.
+
+Signed-off-by: Hector Martin <marcan@marcan.st>
+Reviewed-by: Marek Vasut <marex@denx.de>
+---
+ drivers/usb/host/xhci-ring.c | 15 +++++++++++++++
+ drivers/usb/host/xhci.c      |  9 +++++++++
+ 2 files changed, 24 insertions(+)
+
+diff --git a/drivers/usb/host/xhci-ring.c b/drivers/usb/host/xhci-ring.c
+index c8260cbd..d0960812 100644
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -511,6 +511,9 @@ static void reset_ep(struct usb_device *udev, int ep_index)
+ 	printf("Resetting EP %d...\n", ep_index);
+ 	xhci_queue_command(ctrl, 0, udev->slot_id, ep_index, TRB_RESET_EP);
+ 	event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
++	if (!event)
++		return;
++
+ 	field = le32_to_cpu(event->trans_event.flags);
+ 	BUG_ON(TRB_TO_SLOT_ID(field) != udev->slot_id);
+ 	xhci_acknowledge_event(ctrl);
+@@ -519,6 +522,9 @@ static void reset_ep(struct usb_device *udev, int ep_index)
+ 		(void *)((uintptr_t)ring->enqueue | ring->cycle_state));
+ 	xhci_queue_command(ctrl, addr, udev->slot_id, ep_index, TRB_SET_DEQ);
+ 	event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
++	if (!event)
++		return;
++
+ 	BUG_ON(TRB_TO_SLOT_ID(le32_to_cpu(event->event_cmd.flags))
+ 		!= udev->slot_id || GET_COMP_CODE(le32_to_cpu(
+ 		event->event_cmd.status)) != COMP_SUCCESS);
+@@ -544,6 +550,9 @@ static void abort_td(struct usb_device *udev, int ep_index)
+ 	xhci_queue_command(ctrl, 0, udev->slot_id, ep_index, TRB_STOP_RING);
+ 
+ 	event = xhci_wait_for_event(ctrl, TRB_TRANSFER);
++	if (!event)
++		return;
++
+ 	field = le32_to_cpu(event->trans_event.flags);
+ 	BUG_ON(TRB_TO_SLOT_ID(field) != udev->slot_id);
+ 	BUG_ON(TRB_TO_EP_INDEX(field) != ep_index);
+@@ -552,6 +561,9 @@ static void abort_td(struct usb_device *udev, int ep_index)
+ 	xhci_acknowledge_event(ctrl);
+ 
+ 	event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
++	if (!event)
++		return;
++
+ 	BUG_ON(TRB_TO_SLOT_ID(le32_to_cpu(event->event_cmd.flags))
+ 		!= udev->slot_id || GET_COMP_CODE(le32_to_cpu(
+ 		event->event_cmd.status)) != COMP_SUCCESS);
+@@ -561,6 +573,9 @@ static void abort_td(struct usb_device *udev, int ep_index)
+ 		(void *)((uintptr_t)ring->enqueue | ring->cycle_state));
+ 	xhci_queue_command(ctrl, addr, udev->slot_id, ep_index, TRB_SET_DEQ);
+ 	event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
++	if (!event)
++		return;
++
+ 	BUG_ON(TRB_TO_SLOT_ID(le32_to_cpu(event->event_cmd.flags))
+ 		!= udev->slot_id || GET_COMP_CODE(le32_to_cpu(
+ 		event->event_cmd.status)) != COMP_SUCCESS);
+diff --git a/drivers/usb/host/xhci.c b/drivers/usb/host/xhci.c
+index 5cacf076..d13cbff9 100644
+--- a/drivers/usb/host/xhci.c
++++ b/drivers/usb/host/xhci.c
+@@ -451,6 +451,9 @@ static int xhci_configure_endpoints(struct usb_device *udev, bool ctx_change)
+ 	xhci_queue_command(ctrl, in_ctx->dma, udev->slot_id, 0,
+ 			   ctx_change ? TRB_EVAL_CONTEXT : TRB_CONFIG_EP);
+ 	event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
++	if (!event)
++		return -ETIMEDOUT;
++
+ 	BUG_ON(TRB_TO_SLOT_ID(le32_to_cpu(event->event_cmd.flags))
+ 		!= udev->slot_id);
+ 
+@@ -647,6 +650,9 @@ static int xhci_address_device(struct usb_device *udev, int root_portnr)
+ 	xhci_queue_command(ctrl, virt_dev->in_ctx->dma,
+ 			   slot_id, 0, TRB_ADDR_DEV);
+ 	event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
++	if (!event)
++		return -ETIMEDOUT;
++
+ 	BUG_ON(TRB_TO_SLOT_ID(le32_to_cpu(event->event_cmd.flags)) != slot_id);
+ 
+ 	switch (GET_COMP_CODE(le32_to_cpu(event->event_cmd.status))) {
+@@ -722,6 +728,9 @@ static int _xhci_alloc_device(struct usb_device *udev)
+ 
+ 	xhci_queue_command(ctrl, 0, 0, 0, TRB_ENABLE_SLOT);
+ 	event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
++	if (!event)
++		return -ETIMEDOUT;
++
+ 	BUG_ON(GET_COMP_CODE(le32_to_cpu(event->event_cmd.status))
+ 		!= COMP_SUCCESS);
+ 
+-- 
+2.56.0
+

@@ -1,0 +1,74 @@
+From a558de14c18765e26a9cfc3b9eb44bd1a4597f69 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Tue, 13 Oct 2026 20:19:49 -0700
+Subject: [PATCH 22/22] usb: start all controllers if a partial start found no
+ keyboard
+
+With $usb_only, "usb start" brings up only the listed controllers; the
+Pinebook Pro uses that at power-on to start just its internal keyboard's
+controller. If that keyboard is broken or missing, there is no keyboard
+at all and the boot menu can't be used (and "Rescan USB" can't be
+selected).
+
+After a partial start that found no USB keyboard, clear $usb_only and
+start all controllers, so a keyboard on another port works instead.
+When the keyboard is found, nothing changes.
+---
+ cmd/usb.c | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/cmd/usb.c b/cmd/usb.c
+index 4ff71c7e..7a4efe45 100644
+--- a/cmd/usb.c
++++ b/cmd/usb.c
+@@ -17,6 +17,7 @@
+ #include <console.h>
+ #include <dm.h>
+ #include <dm/uclass-internal.h>
++#include <env.h>
+ #include <memalign.h>
+ #include <asm/byteorder.h>
+ #include <asm/unaligned.h>
+@@ -576,6 +577,19 @@ static int do_usb_stop_keyboard(int force)
+ 	return 0;
+ }
+ 
++/* Did the last "usb start" bring up a USB keyboard? */
++static bool usb_keyboard_found(void)
++{
++	struct udevice *dev;
++
++	for (uclass_find_first_device(UCLASS_KEYBOARD, &dev); dev;
++	     uclass_find_next_device(&dev)) {
++		if (device_active(dev) && !strcmp(dev->driver->name, "usb_kbd"))
++			return true;
++	}
++	return false;
++}
++
+ static void do_usb_start(void)
+ {
+ 	bootstage_mark_name(BOOTSTAGE_ID_USB_START, "usb_start");
+@@ -641,6 +655,19 @@ static int do_usb(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
+ 			printf("starting USB...\n");
+ 		}
+ 		do_usb_start();
++		/*
++		 * $usb_only (e.g. just the internal keyboard's controller at
++		 * power-on) but no keyboard came up, for instance because the
++		 * internal one is broken: start all controllers, so a keyboard
++		 * on another port can be used instead.
++		 */
++		if (CONFIG_IS_ENABLED(DM_USB) && usb_started_partial &&
++		    !usb_keyboard_found()) {
++			printf("no USB keyboard found, starting all controllers...\n");
++			env_set("usb_only", NULL);
++			usb_stop();
++			do_usb_start();
++		}
+ 		return 0;
+ 	}
+ 
+-- 
+2.56.0
+

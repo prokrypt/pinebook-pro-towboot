@@ -1,0 +1,34 @@
+From 8df7ed42f33b50b728dd87f7bf07ac937d416ec8 Mon Sep 17 00:00:00 2001
+From: Hector Martin <marcan@marcan.st>
+Date: Sun, 29 Oct 2023 15:37:43 +0900
+Subject: [PATCH 18/22] usb: xhci: Do not panic on event timeouts
+
+Now that we always check the return value, just return NULL on timeouts.
+We can still log the error since this is a problem, but it's not reason
+to panic.
+
+Signed-off-by: Hector Martin <marcan@marcan.st>
+Reviewed-by: Marek Vasut <marex@denx.de>
+---
+ drivers/usb/host/xhci-ring.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/usb/host/xhci-ring.c b/drivers/usb/host/xhci-ring.c
+index a969eafd..ae0ab574 100644
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -494,8 +494,9 @@ union xhci_trb *xhci_wait_for_event(struct xhci_ctrl *ctrl, trb_type expected)
+ 	if (expected == TRB_TRANSFER)
+ 		return NULL;
+ 
+-	printf("XHCI timeout on event type %d... cannot recover.\n", expected);
+-	BUG();
++	printf("XHCI timeout on event type %d...\n", expected);
++
++	return NULL;
+ }
+ 
+ /*
+-- 
+2.56.0
+

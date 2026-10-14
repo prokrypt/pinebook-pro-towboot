@@ -1,0 +1,33 @@
+From da9660b78b14330a8a36930f15e18dc462d10941 Mon Sep 17 00:00:00 2001
+From: Richard Habeeb <richard.habeeb@gmail.com>
+Date: Mon, 24 Jul 2023 15:45:25 -0400
+Subject: [PATCH 12/22] usb: xhci: Fix double free on failure
+
+drivers/core/device.c will call `device_free()` after xhci_register
+already frees the private device data. This can cause a crash later
+during the boot process, observed on aarch64 RPi4b as a synchronous
+exception. All callers of xhci_register use priv_auto, so this won't
+lead to memory leaks.
+
+Signed-off-by: Richard Habeeb <richard.habeeb@gmail.com>
+Reviewed-by: Bin Meng <bmeng.cn@gmail.com>
+Reviewed-by: Simon Glass <sjg@chromium.org>
+---
+ drivers/usb/host/xhci.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/drivers/usb/host/xhci.c b/drivers/usb/host/xhci.c
+index 9e33c5d8..5cacf076 100644
+--- a/drivers/usb/host/xhci.c
++++ b/drivers/usb/host/xhci.c
+@@ -1418,7 +1418,6 @@ int xhci_register(struct udevice *dev, struct xhci_hccr *hccr,
+ 
+ 	return 0;
+ err:
+-	free(ctrl);
+ 	debug("%s: failed, ret=%d\n", __func__, ret);
+ 	return ret;
+ }
+-- 
+2.56.0
+

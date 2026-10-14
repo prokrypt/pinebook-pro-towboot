@@ -1,0 +1,49 @@
+From 4209cba1c2d7abcb676a48e879870e9255261c6e Mon Sep 17 00:00:00 2001
+From: Hector Martin <marcan@marcan.st>
+Date: Sun, 29 Oct 2023 15:37:40 +0900
+Subject: [PATCH 15/22] usb: xhci: Allow context state errors when halting an
+ endpoint
+
+There is a race where an endpoint may halt by itself while we are trying
+to halt it, which results in a context state error. See xHCI 4.6.9 which
+mentions this case.
+
+This also avoids BUGging when we attempt to stop an endpoint which was
+already stopped to begin with, which is probably a bug elsewhere but
+not a good reason to crash.
+
+Signed-off-by: Hector Martin <marcan@marcan.st>
+Reviewed-by: Marek Vasut <marex@denx.de>
+---
+ drivers/usb/host/xhci-ring.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/usb/host/xhci-ring.c b/drivers/usb/host/xhci-ring.c
+index d21e76e0..e02a6e30 100644
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -545,6 +545,7 @@ static void abort_td(struct usb_device *udev, int ep_index)
+ 	struct xhci_ctrl *ctrl = xhci_get_ctrl(udev);
+ 	struct xhci_ring *ring =  ctrl->devs[udev->slot_id]->eps[ep_index].ring;
+ 	union xhci_trb *event;
++	xhci_comp_code comp;
+ 	trb_type type;
+ 	u64 addr;
+ 	u32 field;
+@@ -573,10 +574,11 @@ static void abort_td(struct usb_device *udev, int ep_index)
+ 		printf("abort_td: Expected a TRB_TRANSFER TRB first\n");
+ 	}
+ 
++	comp = GET_COMP_CODE(le32_to_cpu(event->event_cmd.status));
+ 	BUG_ON(type != TRB_COMPLETION ||
+ 		TRB_TO_SLOT_ID(le32_to_cpu(event->event_cmd.flags))
+-		!= udev->slot_id || GET_COMP_CODE(le32_to_cpu(
+-		event->event_cmd.status)) != COMP_SUCCESS);
++		!= udev->slot_id || (comp != COMP_SUCCESS && comp
++		!= COMP_CTX_STATE));
+ 	xhci_acknowledge_event(ctrl);
+ 
+ 	addr = xhci_trb_virt_to_dma(ring->enq_seg,
+-- 
+2.56.0
+

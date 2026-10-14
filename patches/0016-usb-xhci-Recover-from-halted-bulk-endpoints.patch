@@ -1,0 +1,38 @@
+From 57d6c99ee65eb8b30cd917d0f28e52652d604cfb Mon Sep 17 00:00:00 2001
+From: Hector Martin <marcan@marcan.st>
+Date: Sun, 29 Oct 2023 15:37:41 +0900
+Subject: [PATCH 16/22] usb: xhci: Recover from halted bulk endpoints
+
+There is currently no codepath to recover from this case. In principle
+we could require that the upper layer do this explicitly, but let's just
+do it in xHCI when the next bulk transfer is started, since that
+reasonably implies whatever caused the problem has been dealt with.
+
+Signed-off-by: Hector Martin <marcan@marcan.st>
+Reviewed-by: Marek Vasut <marex@denx.de>
+---
+ drivers/usb/host/xhci-ring.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/drivers/usb/host/xhci-ring.c b/drivers/usb/host/xhci-ring.c
+index e02a6e30..db8b8f20 100644
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -671,6 +671,14 @@ int xhci_bulk_tx(struct usb_device *udev, unsigned long pipe,
+ 
+ 	ep_ctx = xhci_get_ep_ctx(ctrl, virt_dev->out_ctx, ep_index);
+ 
++	/*
++	 * If the endpoint was halted due to a prior error, resume it before
++	 * the next transfer. It is the responsibility of the upper layer to
++	 * have dealt with whatever caused the error.
++	 */
++	if ((le32_to_cpu(ep_ctx->ep_info) & EP_STATE_MASK) == EP_STATE_HALTED)
++		reset_ep(udev, ep_index);
++
+ 	ring = virt_dev->eps[ep_index].ring;
+ 	/*
+ 	 * How much data is (potentially) left before the 64KB boundary?
+-- 
+2.56.0
+

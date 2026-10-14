@@ -1,0 +1,41 @@
+From 045ad761ce49d84671c911380b9681155e1023b7 Mon Sep 17 00:00:00 2001
+From: Janne Grunau <j@jannau.net>
+Date: Thu, 4 Apr 2024 08:25:51 +0200
+Subject: [PATCH 20/22] usb: xhci: Abort transfers with unallocated rings
+
+Discovered while trying to use the second interface in the USB keyboard
+driver necessary on Apple USB keyboards.
+
+Reviewed-by: Marek Vasut <marex@denx.de>
+Reviewed-by: Neal Gompa <neal@gompa.dev>
+Signed-off-by: Janne Grunau <j@jannau.net>
+---
+ drivers/usb/host/xhci-ring.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/drivers/usb/host/xhci-ring.c b/drivers/usb/host/xhci-ring.c
+index b60661fe..910c5f33 100644
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -685,6 +685,9 @@ int xhci_bulk_tx(struct usb_device *udev, unsigned long pipe,
+ 		reset_ep(udev, ep_index);
+ 
+ 	ring = virt_dev->eps[ep_index].ring;
++	if (!ring)
++		return -EINVAL;
++
+ 	/*
+ 	 * How much data is (potentially) left before the 64KB boundary?
+ 	 * XHCI Spec puts restriction( TABLE 49 and 6.4.1 section of XHCI Spec)
+@@ -871,6 +874,8 @@ int xhci_ctrl_tx(struct usb_device *udev, unsigned long pipe,
+ 	ep_index = usb_pipe_ep_index(pipe);
+ 
+ 	ep_ring = virt_dev->eps[ep_index].ring;
++	if (!ep_ring)
++		return -EINVAL;
+ 
+ 	/*
+ 	 * Check to see if the max packet size for the default control
+-- 
+2.56.0
+

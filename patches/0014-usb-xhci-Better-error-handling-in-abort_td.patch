@@ -1,0 +1,97 @@
+From 4f61e6cdc5160184d40c2923aa20df6fcb2e67f5 Mon Sep 17 00:00:00 2001
+From: Hector Martin <marcan@marcan.st>
+Date: Sun, 29 Oct 2023 15:37:39 +0900
+Subject: [PATCH 14/22] usb: xhci: Better error handling in abort_td()
+
+If the xHC has a problem with our STOP ENDPOINT command, it is likely to
+return a completion directly instead of first a transfer event for the
+in-progress transfer. Handle that more gracefully.
+
+We still BUG() on the error code, but at least we don't end up timing
+out on the event and ending up with unexpected event errors.
+
+Signed-off-by: Hector Martin <marcan@marcan.st>
+Reviewed-by: Marek Vasut <marex@denx.de>
+---
+ drivers/usb/host/xhci-ring.c | 34 ++++++++++++++++++++++------------
+ include/usb/xhci.h           |  2 ++
+ 2 files changed, 24 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/usb/host/xhci-ring.c b/drivers/usb/host/xhci-ring.c
+index d0960812..d21e76e0 100644
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -466,7 +466,8 @@ union xhci_trb *xhci_wait_for_event(struct xhci_ctrl *ctrl, trb_type expected)
+ 			continue;
+ 
+ 		type = TRB_FIELD_TO_TYPE(le32_to_cpu(event->event_cmd.flags));
+-		if (type == expected)
++		if (type == expected ||
++		    (expected == TRB_NONE && type != TRB_PORT_STATUS))
+ 			return event;
+ 
+ 		if (type == TRB_PORT_STATUS)
+@@ -544,27 +545,36 @@ static void abort_td(struct usb_device *udev, int ep_index)
+ 	struct xhci_ctrl *ctrl = xhci_get_ctrl(udev);
+ 	struct xhci_ring *ring =  ctrl->devs[udev->slot_id]->eps[ep_index].ring;
+ 	union xhci_trb *event;
++	trb_type type;
+ 	u64 addr;
+ 	u32 field;
+ 
+ 	xhci_queue_command(ctrl, 0, udev->slot_id, ep_index, TRB_STOP_RING);
+ 
+-	event = xhci_wait_for_event(ctrl, TRB_TRANSFER);
++	event = xhci_wait_for_event(ctrl, TRB_NONE);
+ 	if (!event)
+ 		return;
+ 
+-	field = le32_to_cpu(event->trans_event.flags);
+-	BUG_ON(TRB_TO_SLOT_ID(field) != udev->slot_id);
+-	BUG_ON(TRB_TO_EP_INDEX(field) != ep_index);
+-	BUG_ON(GET_COMP_CODE(le32_to_cpu(event->trans_event.transfer_len
+-		!= COMP_STOP)));
+-	xhci_acknowledge_event(ctrl);
++	type = TRB_FIELD_TO_TYPE(le32_to_cpu(event->event_cmd.flags));
++	if (type == TRB_TRANSFER) {
++		field = le32_to_cpu(event->trans_event.flags);
++		BUG_ON(TRB_TO_SLOT_ID(field) != udev->slot_id);
++		BUG_ON(TRB_TO_EP_INDEX(field) != ep_index);
++		BUG_ON(GET_COMP_CODE(le32_to_cpu(event->trans_event.transfer_len
++			!= COMP_STOP)));
++		xhci_acknowledge_event(ctrl);
+ 
+-	event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
+-	if (!event)
+-		return;
++		event = xhci_wait_for_event(ctrl, TRB_COMPLETION);
++		if (!event)
++			return;
++		type = TRB_FIELD_TO_TYPE(le32_to_cpu(event->event_cmd.flags));
+ 
+-	BUG_ON(TRB_TO_SLOT_ID(le32_to_cpu(event->event_cmd.flags))
++	} else {
++		printf("abort_td: Expected a TRB_TRANSFER TRB first\n");
++	}
++
++	BUG_ON(type != TRB_COMPLETION ||
++		TRB_TO_SLOT_ID(le32_to_cpu(event->event_cmd.flags))
+ 		!= udev->slot_id || GET_COMP_CODE(le32_to_cpu(
+ 		event->event_cmd.status)) != COMP_SUCCESS);
+ 	xhci_acknowledge_event(ctrl);
+diff --git a/include/usb/xhci.h b/include/usb/xhci.h
+index 4a4ac102..04d16a25 100644
+--- a/include/usb/xhci.h
++++ b/include/usb/xhci.h
+@@ -901,6 +901,8 @@ union xhci_trb {
+ 
+ /* TRB type IDs */
+ typedef enum {
++	/* reserved, used as a software sentinel */
++	TRB_NONE = 0,
+ 	/* bulk, interrupt, isoc scatter/gather, and control data stage */
+ 	TRB_NORMAL = 1,
+ 	/* setup stage for control transfers */
+-- 
+2.56.0
+
