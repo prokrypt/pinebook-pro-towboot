@@ -1,0 +1,29 @@
+From a686cdf3d5e8fadef9041ced25403d638af623ce Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Tue, 13 Oct 2026 19:05:23 -0700
+Subject: [PATCH 09/10] pinebook-pro: run the SD card at 50 MHz in U-Boot
+
+The SD card (sdmmc) was capped at 20 MHz since Pinebook Pro support was
+added, without a stated reason. Other RK3399 boards don't cap it, and
+Rockchip's own Android device tree for the Pinebook Pro uses 50 MHz
+(SD high speed). Loading a 50 MB kernel from SD took 6.6 s at 20 MHz.
+---
+ arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi b/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
+index 163e5010..6a7656a0 100644
+--- a/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
++++ b/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
+@@ -31,7 +31,7 @@
+ };
+ 
+ &sdmmc {
+-	max-frequency = <20000000>;
++	max-frequency = <50000000>;
+ 	bootph-all;
+ };
+ 
+-- 
+2.56.0
+

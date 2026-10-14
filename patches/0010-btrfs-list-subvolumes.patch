@@ -1,0 +1,36 @@
+From fa8e0ec20e6d0ccc97463e4ce5818733cdece56b Mon Sep 17 00:00:00 2001
+From: Dan Carpenter <dan.carpenter@linaro.org>
+Date: Wed, 26 Jul 2023 09:59:04 +0300
+Subject: [PATCH 10/10] fs: btrfs: Prevent error pointer dereference in
+ list_subvolums()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+If btrfs_read_fs_root() fails with -ENOENT, then we go to the next
+entry.  Fine.  But if it fails for a different reason then we need
+to clean up and return an error code.  In the current code it
+doesn't clean up but instead dereferences "root" and crashes.
+
+Signed-off-by: Dan Carpenter <dan.carpenter@linaro.org>
+Reviewed-by: Marek Behún <kabel@kernel.org>
+Reviewed-by: Qu Wenruo <wqu@suse.com>
+---
+ fs/btrfs/subvolume.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/fs/btrfs/subvolume.c b/fs/btrfs/subvolume.c
+index d446e7a2..68ca7e48 100644
+--- a/fs/btrfs/subvolume.c
++++ b/fs/btrfs/subvolume.c
+@@ -199,6 +199,7 @@ static int list_subvolums(struct btrfs_fs_info *fs_info)
+ 			ret = PTR_ERR(root);
+ 			if (ret == -ENOENT)
+ 				goto next;
++			goto out;
+ 		}
+ 		ret = list_one_subvol(root, result);
+ 		if (ret < 0)
+-- 
+2.56.0
+

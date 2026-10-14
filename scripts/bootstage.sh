@@ -1,5 +1,7 @@
 #!/bin/sh
-# Print the boot timing that Tow-Boot 007-pbp2 hands to the kernel.
+# Print the boot timing Tow-Boot hands to the kernel in /proc/device-tree/bootstage.
+# Needs a build with CONFIG_BOOTSTAGE and CONFIG_BOOTSTAGE_FDT; none of the released
+# working builds has them (only the withdrawn 007-pbp2 did).
 # Times are microseconds since power-on (arm generic timer).
 #
 #   scripts/bootstage.sh

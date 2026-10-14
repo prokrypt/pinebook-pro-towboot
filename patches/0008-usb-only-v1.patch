@@ -1,0 +1,128 @@
+From 7fa6cb5f6ff92788caf25c8ceb418181334aa92d Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Tue, 13 Oct 2026 18:15:55 -0700
+Subject: [PATCH] usb: start only the controllers in $usb_only, if set
+
+"usb start" probes and scans every USB controller. On the Pinebook Pro
+that is six controllers and takes ~6.4 s at every boot, although the
+boot menu only needs the internal keyboard.
+
+If the environment variable usb_only is set (space-separated controller
+names, e.g. "usb@fe380000 usb@fe3a0000"), usb_init() skips all other
+controllers. A later "usb start" after such a partial start brings up
+all controllers (so "Boot from USB" and USB network boot still work),
+and "usb reset" always does.
+---
+ cmd/usb.c                     | 12 ++++++++++--
+ common/usb.c                  |  1 +
+ drivers/usb/host/usb-uclass.c | 29 +++++++++++++++++++++++++++++
+ include/usb.h                 |  1 +
+ 4 files changed, 41 insertions(+), 2 deletions(-)
+
+diff --git a/cmd/usb.c b/cmd/usb.c
+index 23253f22..4ff71c7e 100644
+--- a/cmd/usb.c
++++ b/cmd/usb.c
+@@ -629,9 +629,17 @@ static int do_usb(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
+ 		return CMD_RET_USAGE;
+ 
+ 	if (strncmp(argv[1], "start", 5) == 0) {
+-		if (usb_started)
++		if (usb_started && !usb_started_partial)
+ 			return 0; /* Already started */
+-		printf("starting USB...\n");
++		if (usb_started) {
++			/* Only some controllers were started ($usb_only) */
++			printf("starting USB (all controllers)...\n");
++			if (do_usb_stop_keyboard(1) != 0)
++				return 1;
++			usb_stop();
++		} else {
++			printf("starting USB...\n");
++		}
+ 		do_usb_start();
+ 		return 0;
+ 	}
+diff --git a/common/usb.c b/common/usb.c
+index 836506dc..f9a987fe 100644
+--- a/common/usb.c
++++ b/common/usb.c
+@@ -44,6 +44,7 @@
+ 
+ static int asynch_allowed;
+ bool usb_started; /* flag for the started/stopped USB status */
++bool usb_started_partial; /* some controllers skipped ($usb_only) */
+ 
+ #if !CONFIG_IS_ENABLED(DM_USB)
+ static struct usb_device usb_dev[USB_MAX_DEVICE];
+diff --git a/drivers/usb/host/usb-uclass.c b/drivers/usb/host/usb-uclass.c
+index 02c0138a..c3b764c7 100644
+--- a/drivers/usb/host/usb-uclass.c
++++ b/drivers/usb/host/usb-uclass.c
+@@ -10,6 +10,7 @@
+ 
+ #include <common.h>
+ #include <dm.h>
++#include <env.h>
+ #include <errno.h>
+ #include <log.h>
+ #include <memalign.h>
+@@ -249,6 +250,28 @@ static void remove_inactive_children(struct uclass *uc, struct udevice *bus)
+ 	}
+ }
+ 
++/*
++ * If $usb_only is set (space-separated controller names, e.g.
++ * "usb@fe380000 usb@fe3a0000"), only start those controllers. Lets a board
++ * start just the keyboard's controller at boot; a later "usb start" or
++ * "usb reset" without $usb_only starts all of them.
++ */
++static bool usb_bus_wanted(struct udevice *bus)
++{
++	const char *only = env_get("usb_only");
++	size_t len = strlen(bus->name);
++	const char *p;
++
++	if (!only || !*only)
++		return true;
++	for (p = only; (p = strstr(p, bus->name)); p += len) {
++		if ((p == only || p[-1] == ' ') &&
++		    (p[len] == '\0' || p[len] == ' '))
++			return true;
++	}
++	return false;
++}
++
+ int usb_init(void)
+ {
+ 	int controllers_initialized = 0;
+@@ -265,8 +288,14 @@ int usb_init(void)
+ 		return ret;
+ 
+ 	uc_priv = uclass_get_priv(uc);
++	usb_started_partial = false;
+ 
+ 	uclass_foreach_dev(bus, uc) {
++		if (!usb_bus_wanted(bus)) {
++			usb_started_partial = true;
++			continue;
++		}
++
+ 		/* init low_level USB */
+ 		printf("Bus %s: ", bus->name);
+ 
+diff --git a/include/usb.h b/include/usb.h
+index 42b001c3..d16827f7 100644
+--- a/include/usb.h
++++ b/include/usb.h
+@@ -19,6 +19,7 @@
+ #include <part.h>
+ 
+ extern bool usb_started; /* flag for the started/stopped USB status */
++extern bool usb_started_partial; /* some controllers skipped ($usb_only) */
+ 
+ /*
+  * The EHCI spec says that we must align to at least 32 bytes.  However,
+-- 
+2.56.0
+

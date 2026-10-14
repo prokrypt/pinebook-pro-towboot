@@ -22,7 +22,7 @@
     ../patches/0005-fs-btrfs-Do-not-free-multi-when-guaranteed-to-be-NUL.patch
     ../patches/0006-fs-btrfs-release-the-path-when-btrfs_search_slot-fai.patch
     ../patches/0007-fs-btrfs-fix-zstd-decompression-of-compressed-inline.patch
-    ../patches/0008-usb-only.patch
+    ../patches/0008-usb-only-v1.patch  # first version, as built for the release (0008 has an extra guard)
   ];
   Tow-Boot.config = [
     (helpers: with helpers; {

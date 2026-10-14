@@ -9,6 +9,7 @@ What it fixes or adds:
 - **`/boot` on btrfs** (pbp2c). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
 - **Device-tree overlays.** `FDTOVERLAYS` in `extlinux.conf` works. Stock Tow-Boot is built without overlay support and silently ignores it.
 - **Faster boot** (pbp2f): only the internal keyboard's USB controller is started at power-on, about 5.7 s quicker on my Pinebook Pro. "Rescan USB" and "Boot from USB" still use every port.
+- **Faster SD card** (pbp2g and later): 50 MHz instead of 20 MHz in Tow-Boot, so booting from SD loads about 65% faster.
 - A 1 s boot menu countdown instead of 2 s.
 
 Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot `2023.07-007`.
@@ -19,7 +20,8 @@ Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot
 
 | Version | Status | What's in it |
 |---|---|---|
-| **007-pbp2f** | **Tested**: in use on my Pinebook Pro since 2026-10-13 | pbp2c + faster USB start |
+| **007-pbp2h** | **Tested**: in use on my Pinebook Pro since 2026-10-13 | pbp2f + SD at 50 MHz + one more btrfs fix (0010); version labels fixed |
+| 007-pbp2f | Tested: in use on my Pinebook Pro 2026-10-13 | pbp2c + faster USB start |
 | 007-pbp2c | Tested: boots from SPI (2026-10-13), btrfs reading tested | pbp1 + btrfs, with U-Boot's start-up stack moved (see below) |
 | 007-pbp1 | Tested, in daily use 2026-10-13 | Backlight fix, dimmer screen, overlays, 1 s countdown |
 | ~~007-pbp2~~ | **Broken, withdrawn**: black screen at power-on, needed a maskrom recovery | pbp1 + btrfs + boot timing, without the stack fix |
@@ -76,6 +78,7 @@ The btrfs code in U-Boot 2023.07 has bugs that were fixed later in U-Boot master
 | 0005 | `9204cae093` | Freeing a pointer that's always NULL |
 | 0006 | `1a5c8af2d4` | Path not released when a tree search fails |
 | 0007 | `6f0719e4c4` | **zstd-compressed small files fail with `zstd_decompress: failed to decompress: 70`** |
+| 0010 | `c331efd087` | Crash in `btrsubvol` when a subvolume can't be read (pbp2h; not used when booting) |
 
 0007 matters most: with `compress=zstd`, small files that the running kernel writes (like `extlinux.conf` after you edit it) are stored "inline" in a way 2023.07 can't decompress. It was reported on RK3399 boards (armbian/build#9651, #10208).
 
@@ -108,7 +111,20 @@ so only the keyboard's controllers come up at power-on. Any later `usb start` af
 
 Measured with the arm generic timer (power-on to kernel start, normal boot, same 3 s extlinux menu): **23.5 s with pbp2c, 17.8 s with pbp2f.**
 
+**External keyboards:** only the internal keyboard's controllers start at power-on. That loses nothing in practice: external USB keyboards don't work in the Tow-Boot menu on the Pinebook Pro even with stock Tow-Boot and every port scanned ([Tow-Boot#153](https://github.com/Tow-Boot/Tow-Boot/issues/153)); I tried one in each USB-A port with this build and it didn't work either. So pbp2h deliberately doesn't add the USB-A ports (right port = `usb@fe3c0000` behind an internal hub that also has the webcam, left port = `usb@fe900000`), which would only cost boot time. To scan everything at power-on anyway, set `preboot` back from the Firmware Console: `setenv preboot usb start; saveenv` (undo with `env default preboot; saveenv`).
+
 An earlier attempt (pbp2e) disabled the other controllers in U-Boot's device tree instead. That was as fast, but then U-Boot never binds drivers for them, so USB boot was gone even after "Rescan USB".
+
+### SD card at 50 MHz (pbp2g and later, patch 0009)
+
+U-Boot's Pinebook Pro device tree caps the SD card at 20 MHz (and the eMMC at 25 MHz), since Pinebook Pro support was first added in 2020, with no reason given. Other RK3399 boards don't cap the SD card, and Rockchip's own Android device tree for the Pinebook Pro runs it at 50 MHz. Patch 0009 sets 50 MHz (SD high speed). Measured on my 128 GB card, loading from btrfs:
+
+| File | 20 MHz | 50 MHz |
+|---|---|---|
+| initramfs, 23 MB | 3.69 s | 2.19 s |
+| kernel `Image`, 50 MB | 6.63 s | 4.01 s |
+
+The change also lands in TPL's and SPL's device trees (the `sdmmc` node is in all phases), but they don't touch the SD card when booting from SPI. The eMMC cap (25 MHz, ~22 MiB/s) is unchanged.
 
 ### Device-tree overlays
 
@@ -135,6 +151,8 @@ sudo cmp -n $(stat -c%s Tow-Boot.spi.bin) /dev/mtd0ro Tow-Boot.spi.bin && echo O
 
 To undo: `sudo flashcp -v mtd0-backup.img /dev/mtd0`.
 
+**If you ever saved Tow-Boot settings** (`saveenv` in its console, or `fw_setenv` from Linux), they live in the SPI flash at `0xFE0000`, which flashing doesn't touch, and they override the new build's defaults: you'd keep your old `preboot` (no USB speed-up) and `bootdelay`. After flashing, reset them from the Firmware Console with `env default -a; saveenv`. If you never saved settings, the area is blank (`0xFF`) and there's nothing to do.
+
 ### From an SD card
 
 Use `spi.installer.img` the same way as stock Tow-Boot: unpack it (`xz -d spi.installer.img.xz`), write it to an SD card, boot it, and pick **"Flash firmware to SPI"**. See the [Tow-Boot Pinebook Pro page](https://tow-boot.org/devices/pine64-pinebookPro.html). The RK3399 starts from SPI first, then eMMC, then SD, so if there's already a bootloader in SPI or on the eMMC, you may have to keep it from starting before the installer can run.
@@ -144,6 +162,14 @@ Use `spi.installer.img` the same way as stock Tow-Boot: unpack it (`xz -d spi.in
 If the laptop doesn't start after flashing (no Tow-Boot screen at all), the SPI flash has to be rewritten from another computer: put the RK3399 into **maskrom** mode and use `rkdeveloptool` over USB-C. See the [PINE64 wiki](https://wiki.pine64.org/wiki/Pinebook_Pro). Keep your `mtd0-backup.img` on another machine before you flash anything.
 
 If Tow-Boot starts but your OS doesn't, that's a boot config problem, not the firmware. Pick another entry or device from the Tow-Boot menu.
+
+## Known issues (also in stock Tow-Boot)
+
+These are open bugs in stock Tow-Boot on the Pinebook Pro, and this build has them too:
+
+- **Touching the touchpad freezes the keyboard in the Tow-Boot menu** ([Tow-Boot#57](https://github.com/Tow-Boot/Tow-Boot/issues/57)). It looks like a hang, but only keyboard input stops (a serial console keeps working). The internal keyboard and touchpad are one USB device. **Workaround: don't touch the touchpad while in the Tow-Boot menu or console**; if it happens, hold power and start again. I'm looking into a fix.
+- **"Rescan USB" sometimes reboots** ([Tow-Boot#141](https://github.com/Tow-Boot/Tow-Boot/issues/141)), intermittently. I've also seen a spontaneous reboot right after pressing Enter in the console.
+- **External USB keyboards don't work in the menu** ([Tow-Boot#153](https://github.com/Tow-Boot/Tow-Boot/issues/153)).
 
 ## Good to know about Tow-Boot on the Pinebook Pro
 
@@ -159,7 +185,7 @@ These hold for stock Tow-Boot 2023.07-007 and this build:
 ## Building
 
 ```sh
-scripts/build.sh pbp2f     # or pbp2c, pbp1
+scripts/build.sh pbp2h     # or pbp2f, pbp2c, pbp1
 ```
 
 It checks out Tow-Boot `release-2023.07-007` (which builds [Tow-Boot/U-Boot](https://github.com/Tow-Boot/U-Boot) tag `tb-2023.07-007`) into `build/`, applies the patches and config from `nix/<variant>.nix`, puts the results in `out/<variant>/`, and runs `scripts/check-layout.sh` on the image. It uses `nix-build` if you have Nix. Otherwise it runs Nix in a `podman`/`docker` container, with the Nix store kept in a volume called `towboot-nix`. It cross-compiles on x86_64; the first build takes a while.

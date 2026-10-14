@@ -1,7 +1,7 @@
-From 7fa6cb5f6ff92788caf25c8ceb418181334aa92d Mon Sep 17 00:00:00 2001
+From c8ba32233c3b189f0e9fc77fce13a689a330c89a Mon Sep 17 00:00:00 2001
 From: prokrypt <prokrypt@edited.us>
 Date: Tue, 13 Oct 2026 18:15:55 -0700
-Subject: [PATCH] usb: start only the controllers in $usb_only, if set
+Subject: [PATCH 08/10] usb: start only the controllers in $usb_only, if set
 
 "usb start" probes and scans every USB controller. On the Pinebook Pro
 that is six controllers and takes ~6.4 s at every boot, although the
@@ -15,9 +15,9 @@ and "usb reset" always does.
 ---
  cmd/usb.c                     | 12 ++++++++++--
  common/usb.c                  |  1 +
- drivers/usb/host/usb-uclass.c | 29 +++++++++++++++++++++++++++++
+ drivers/usb/host/usb-uclass.c | 31 +++++++++++++++++++++++++++++++
  include/usb.h                 |  1 +
- 4 files changed, 41 insertions(+), 2 deletions(-)
+ 4 files changed, 43 insertions(+), 2 deletions(-)
 
 diff --git a/cmd/usb.c b/cmd/usb.c
 index 23253f22..4ff71c7e 100644
@@ -56,7 +56,7 @@ index 836506dc..f9a987fe 100644
  #if !CONFIG_IS_ENABLED(DM_USB)
  static struct usb_device usb_dev[USB_MAX_DEVICE];
 diff --git a/drivers/usb/host/usb-uclass.c b/drivers/usb/host/usb-uclass.c
-index 02c0138a..c3b764c7 100644
+index 02c0138a..fb06e66b 100644
 --- a/drivers/usb/host/usb-uclass.c
 +++ b/drivers/usb/host/usb-uclass.c
 @@ -10,6 +10,7 @@
@@ -67,7 +67,7 @@ index 02c0138a..c3b764c7 100644
  #include <errno.h>
  #include <log.h>
  #include <memalign.h>
-@@ -249,6 +250,28 @@ static void remove_inactive_children(struct uclass *uc, struct udevice *bus)
+@@ -249,6 +250,30 @@ static void remove_inactive_children(struct uclass *uc, struct udevice *bus)
  	}
  }
  
@@ -79,10 +79,12 @@ index 02c0138a..c3b764c7 100644
 + */
 +static bool usb_bus_wanted(struct udevice *bus)
 +{
-+	const char *only = env_get("usb_only");
++	const char *only, *p;
 +	size_t len = strlen(bus->name);
-+	const char *p;
 +
++	if (!CONFIG_IS_ENABLED(ENV_SUPPORT))
++		return true;
++	only = env_get("usb_only");
 +	if (!only || !*only)
 +		return true;
 +	for (p = only; (p = strstr(p, bus->name)); p += len) {
@@ -96,7 +98,7 @@ index 02c0138a..c3b764c7 100644
  int usb_init(void)
  {
  	int controllers_initialized = 0;
-@@ -265,8 +288,14 @@ int usb_init(void)
+@@ -265,8 +290,14 @@ int usb_init(void)
  		return ret;
  
  	uc_priv = uclass_get_priv(uc);
