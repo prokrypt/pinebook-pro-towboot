@@ -4,10 +4,9 @@ A small set of patches on top of [Tow-Boot](https://tow-boot.org) `2023.07-007`,
 
 What it fixes or adds:
 
-- **No more garbage on screen at boot.** The screen stays dark from "Starting kernel" until the desktop.
+- **No more garbage on screen at boot.** The screen stays dark from "Starting kernel" until the kernel's display driver turns the panel on (about 3 s into boot), instead of showing garbage in between.
 - **A dimmer Tow-Boot screen.** The stock build runs the backlight at 100%.
-- **`/boot` on btrfs** (*in progress*: the first build, pbp2, didn't start; see Versions). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
-- **Boot timing you can read from Linux** (*in progress*, together with btrfs). Tow-Boot's timings show up in `/proc/device-tree/bootstage`.
+- **`/boot` on btrfs** (pbp2c). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
 - **Device-tree overlays.** `FDTOVERLAYS` in `extlinux.conf` works. Stock Tow-Boot is built without overlay support and silently ignores it.
 - A 1 s boot menu countdown instead of 2 s.
 
@@ -19,12 +18,21 @@ Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot
 
 | Version | Status | What's in it |
 |---|---|---|
-| **007-pbp1** | Tested, in daily use on my Pinebook Pro | Backlight fix, dimmer screen, overlays, 1 s countdown |
-| ~~007-pbp2~~ | **Broken, withdrawn**: black screen at power-on, needed a maskrom recovery | pbp1 + btrfs + boot timing |
+| **007-pbp2c** | **Tested**: boots from SPI on my Pinebook Pro (2026-10-13), btrfs reading tested | pbp1 + btrfs, with U-Boot's start-up stack moved (see below) |
+| 007-pbp1 | Tested, in daily use 2026-10-13 | Backlight fix, dimmer screen, overlays, 1 s countdown |
+| ~~007-pbp2~~ | **Broken, withdrawn**: black screen at power-on, needed a maskrom recovery | pbp1 + btrfs + boot timing, without the stack fix |
 
 Prebuilt images are on the [Releases](../../releases) page: `Tow-Boot.spi.bin` (to flash from Linux) and `spi.installer.img` (SD card installer), with SHA-256 sums.
 
-> **007-pbp2 does not start** (black screen from power-on, red LED; SPI restored with maskrom). Its files were removed. A btrfs-only build (pbp2b) failed the same way. **Cause: the image grew past a memory limit in U-Boot 2023.07.** U-Boot proper is loaded at `0x200000` with its device tree right after it, and at start-up it puts its stack, early heap (16 KB) and global data just below `CONFIG_CUSTOM_SYS_INIT_SP_ADDR=0x300000`. When booting from SPI, SPL also grows the device tree by 8 KB (`fdt_shrink_to_minimum(..., 8192)` in `common/spl/spl_fit.c`). pbp1 ends at `0x2EA530` (plus 8 KB), but with btrfs the device tree runs into the early heap and gets overwritten. Upstream U-Boot has since moved this stack to `0x03f00000` on Rockchip. (An earlier version of this page blamed `CONFIG_BOOTSTAGE`; that was wrong.) A fixed build will only be released after it has booted from SPI. Don't build `nix/pbp2.nix` as it is.
+### What happened to 007-pbp2 (and why pbp2c moves the stack)
+
+007-pbp2 gave a black screen and a red LED from power-on, and the SPI flash had to be restored with maskrom; a btrfs-only build (pbp2b) failed the same way. **Cause: the image grew past a memory limit in U-Boot 2023.07.**
+
+U-Boot proper is loaded at `0x200000` with its device tree right after it. At start-up it puts its stack, a 16 KB early heap and its global data just below `CONFIG_CUSTOM_SYS_INIT_SP_ADDR`, which is `0x300000` on the Pinebook Pro. When booting from SPI, SPL also grows the device tree (8 KB of free space plus `/fit-images` entries, `common/spl/spl_fit.c`). pbp1 ends at about `0x2EC930` including that, leaving ~60 KB of stack. btrfs adds ~75 KB of code, so the device tree ran into the early heap and was overwritten before the display came up. Current upstream U-Boot has already moved this stack to `0x03f00000` on Rockchip; pbp2c does the same and leaves ~60 MB of room. An earlier version of this page blamed `CONFIG_BOOTSTAGE`; that was wrong.
+
+`scripts/check-layout.sh` (run by `scripts/build.sh`) checks this for any build and fails pbp2/pbp2b while passing pbp1/pbp2c. Run it before flashing anything you built yourself.
+
+How pbp2c was tested before it was flashed: its first-stage loaders (TPL/SPL) are byte-identical to pbp1's, its U-Boot differs from the chainload-tested pbp2b only in the stack address, and that U-Boot booted Linux from a btrfs filesystem when chainloaded from a working Tow-Boot (`bootm` of a uImage from an extlinux entry). A chainload doesn't reproduce everything SPL does, so in the end it was flashed and booted.
 
 ## The changes in detail
 
@@ -40,7 +48,7 @@ It also sets `default-brightness-level = <40>` (of 255) for the Tow-Boot screen.
 
 Tip: put `kms` in `HOOKS` in `/etc/mkinitcpio.conf` (Arch-based distros) so the display driver loads from the initramfs, about 2 s into boot instead of after the root fs is mounted.
 
-### btrfs (pbp2, patches 0002–0007)
+### btrfs (pbp2c, patches 0002–0007)
 
 `CONFIG_FS_BTRFS` and the `btrfs`/`btrsubvol` commands are turned on. U-Boot's btrfs reader is **read-only and single-device**, and it reads zlib, lzo and zstd compression.
 
@@ -72,11 +80,11 @@ The btrfs code in U-Boot 2023.07 has bugs that were fixed later in U-Boot master
 Notes:
 - I checked the feature flags of a filesystem made with btrfs-progs 7.1 (`extref`, `skinny-metadata`, `no-holes`, `free-space-tree`, `block-group-tree`, zstd) against what U-Boot supports: all fine. `block-group-tree` works because U-Boot never reads block groups. Features U-Boot doesn't know (for example `raid-stripe-tree`, `extent-tree-v2`, `simple-quota`) make it refuse to open the filesystem.
 - As with ext4, Tow-Boot only scans partitions with the MBR **bootable flag**. If none has the flag, it only scans partition 1.
-- **Status: the pbp2 build didn't start** (see Versions): adding btrfs made the image too big for U-Boot 2023.07's early memory layout. Reading btrfs itself works (tested by chainloading). Not usable yet.
+- **Tested:** booted a kernel, initramfs and dtb from a zstd-compressed btrfs (single partition, top-level subvolume), including an `extlinux.conf` stored inline and zstd-compressed by the kernel (the 0007 case). Booting from a non-top-level default subvolume like `@` hasn't been tested yet.
 
-### Boot timing (pbp2)
+### Boot timing (not in any working build yet)
 
-`CONFIG_BOOTSTAGE` and `CONFIG_BOOTSTAGE_FDT` are on. Tow-Boot records the time of each boot stage and adds it to the device tree it hands to the kernel. Nothing is printed on screen. After boot:
+pbp2 had `CONFIG_BOOTSTAGE` and `CONFIG_BOOTSTAGE_FDT` on; pbp2c doesn't, since pbp2 didn't start (for the stack reason above, not because of this). With them, Tow-Boot records the time of each boot stage and adds it to the device tree it hands to the kernel. Nothing is printed on screen. After boot:
 
 ```sh
 scripts/bootstage.sh
@@ -101,7 +109,7 @@ Needs the kernel's SPI flash driver (most distro kernels have it; `cat /proc/mtd
 sudo dd if=/dev/mtd0ro of=mtd0-backup.img bs=1M
 # 2. Check the download
 sha256sum Tow-Boot.spi.bin        # compare with the release page
-# 3. Flash (only touches the first ~1.7 MB; Tow-Boot's saved settings at 0xFE0000 are left alone)
+# 3. Flash (only touches the first ~1.8 MB; Tow-Boot's saved settings at 0xFE0000 are left alone)
 sudo flashcp -v Tow-Boot.spi.bin /dev/mtd0
 # 4. Read it back and compare
 sudo cmp -n $(stat -c%s Tow-Boot.spi.bin) /dev/mtd0ro Tow-Boot.spi.bin && echo OK
@@ -133,10 +141,10 @@ These hold for stock Tow-Boot 2023.07-007 and this build:
 ## Building
 
 ```sh
-scripts/build.sh pbp2      # or pbp1
+scripts/build.sh pbp2c     # or pbp1
 ```
 
-It checks out Tow-Boot `release-2023.07-007` (which builds [Tow-Boot/U-Boot](https://github.com/Tow-Boot/U-Boot) tag `tb-2023.07-007`) into `build/`, applies the patches and config from `nix/<variant>.nix`, and puts the results in `out/<variant>/`. It uses `nix-build` if you have Nix. Otherwise it runs Nix in a `podman`/`docker` container, with the Nix store kept in a volume called `towboot-nix`. It cross-compiles on x86_64; the first build takes a while.
+It checks out Tow-Boot `release-2023.07-007` (which builds [Tow-Boot/U-Boot](https://github.com/Tow-Boot/U-Boot) tag `tb-2023.07-007`) into `build/`, applies the patches and config from `nix/<variant>.nix`, puts the results in `out/<variant>/`, and runs `scripts/check-layout.sh` on the image. It uses `nix-build` if you have Nix. Otherwise it runs Nix in a `podman`/`docker` container, with the Nix store kept in a volume called `towboot-nix`. It cross-compiles on x86_64; the first build takes a while.
 
 The full U-Boot configs of the released images are in `configs/`.
 
