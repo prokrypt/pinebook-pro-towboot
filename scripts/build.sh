@@ -1,14 +1,14 @@
 #!/bin/sh
-# Build a variant (pbp1 or pbp2c) of this Tow-Boot for the Pinebook Pro.
+# Build a variant (pbp1, pbp2c or pbp2f) of this Tow-Boot for the Pinebook Pro.
 #
-#   scripts/build.sh pbp2c
+#   scripts/build.sh pbp2f
 #
 # Uses nix-build if Nix is installed, otherwise podman (or docker) with the
 # nixos/nix image. Works on x86_64 (cross-compiles) and aarch64 hosts.
 # Output: out/<variant>/ (binaries/Tow-Boot.spi.bin, spi.installer.img, config/)
 set -eu
 
-variant=${1:-pbp2c}
+variant=${1:-pbp2f}
 repo=$(cd "$(dirname "$0")/.." && pwd)
 nixfile=$repo/nix/$variant.nix
 [ -f "$nixfile" ] || { echo "unknown variant: $variant (see nix/)" >&2; exit 1; }

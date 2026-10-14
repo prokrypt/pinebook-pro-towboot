@@ -8,6 +8,7 @@ What it fixes or adds:
 - **A dimmer Tow-Boot screen.** The stock build runs the backlight at 100%.
 - **`/boot` on btrfs** (pbp2c). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
 - **Device-tree overlays.** `FDTOVERLAYS` in `extlinux.conf` works. Stock Tow-Boot is built without overlay support and silently ignores it.
+- **Faster boot** (pbp2f): only the internal keyboard's USB controller is started at power-on, about 5.7 s quicker on my Pinebook Pro. "Rescan USB" and "Boot from USB" still use every port.
 - A 1 s boot menu countdown instead of 2 s.
 
 Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot `2023.07-007`.
@@ -18,7 +19,8 @@ Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot
 
 | Version | Status | What's in it |
 |---|---|---|
-| **007-pbp2c** | **Tested**: boots from SPI on my Pinebook Pro (2026-10-13), btrfs reading tested | pbp1 + btrfs, with U-Boot's start-up stack moved (see below) |
+| **007-pbp2f** | **Tested**: in use on my Pinebook Pro since 2026-10-13 | pbp2c + faster USB start |
+| 007-pbp2c | Tested: boots from SPI (2026-10-13), btrfs reading tested | pbp1 + btrfs, with U-Boot's start-up stack moved (see below) |
 | 007-pbp1 | Tested, in daily use 2026-10-13 | Backlight fix, dimmer screen, overlays, 1 s countdown |
 | ~~007-pbp2~~ | **Broken, withdrawn**: black screen at power-on, needed a maskrom recovery | pbp1 + btrfs + boot timing, without the stack fix |
 
@@ -92,6 +94,22 @@ scripts/bootstage.sh
 
 prints each stage in milliseconds since power-on, read from `/proc/device-tree/bootstage/`. Handy for comparing, say, `Image` against `Image.gz`, or ext4 against btrfs.
 
+### Faster USB start (pbp2f, patch 0008)
+
+Tow-Boot runs `usb start` at power-on so the boot menu can see the keyboard. U-Boot then starts and scans **all six** USB controllers of the RK3399 (two EHCI, two OHCI, two DWC3/XHCI for the USB 3 and Type-C ports), plus USB storage: `time usb reset` measured **6.4 s** on my Pinebook Pro. The internal keyboard is a low-speed device on USB host0 (EHCI `fe380000` with its OHCI companion `fe3a0000`).
+
+Patch 0008 adds an environment variable to U-Boot: if `usb_only` is set to a space-separated list of controller names, `usb start` only starts those. pbp2f's `preboot` is
+
+```
+setenv usb_only usb@fe380000 usb@fe3a0000; usb start; setenv usb_only
+```
+
+so only the keyboard's controllers come up at power-on. Any later `usb start` after such a partial start (it's what "Boot from USB" and USB network boot run) brings up **all** controllers first, and `usb reset` ("Rescan USB") always does. Booting from a USB stick should work as before, with the full scan at that point. **Not tested yet:** the keyboard and normal booting are tested, but I haven't booted from USB with pbp2f.
+
+Measured with the arm generic timer (power-on to kernel start, normal boot, same 3 s extlinux menu): **23.5 s with pbp2c, 17.8 s with pbp2f.**
+
+An earlier attempt (pbp2e) disabled the other controllers in U-Boot's device tree instead. That was as fast, but then U-Boot never binds drivers for them, so USB boot was gone even after "Rescan USB".
+
 ### Device-tree overlays
 
 `CONFIG_OF_LIBFDT_OVERLAY=y`, so `FDTOVERLAYS /path/a.dtbo /path/b.dtbo` in an `extlinux.conf` entry is applied. Stock 2023.07-007 is built without it and silently ignores the line (the firmware contains the message `config with overlays but CONFIG_OF_LIBFDT_OVERLAY not set`). Overlays can only add or change properties, not delete them. If you need to delete one, merge the dtb yourself with `fdtoverlay` + `fdtput -d`.
@@ -141,7 +159,7 @@ These hold for stock Tow-Boot 2023.07-007 and this build:
 ## Building
 
 ```sh
-scripts/build.sh pbp2c     # or pbp1
+scripts/build.sh pbp2f     # or pbp2c, pbp1
 ```
 
 It checks out Tow-Boot `release-2023.07-007` (which builds [Tow-Boot/U-Boot](https://github.com/Tow-Boot/U-Boot) tag `tb-2023.07-007`) into `build/`, applies the patches and config from `nix/<variant>.nix`, puts the results in `out/<variant>/`, and runs `scripts/check-layout.sh` on the image. It uses `nix-build` if you have Nix. Otherwise it runs Nix in a `podman`/`docker` container, with the Nix store kept in a volume called `towboot-nix`. It cross-compiles on x86_64; the first build takes a while.
