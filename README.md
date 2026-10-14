@@ -9,6 +9,7 @@ What it fixes or adds:
 - **`/boot` on btrfs** (pbp2c). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
 - **Device-tree overlays.** `FDTOVERLAYS` in `extlinux.conf` works. Stock Tow-Boot is built without overlay support and silently ignores it.
 - **Faster boot** (pbp2f): only the internal keyboard's USB controller is started at power-on, about 5.7 s quicker on my Pinebook Pro. "Rescan USB" and "Boot from USB" still use every port.
+- **External USB keyboards work in the Tow-Boot menu** next to the internal one (pbp2k; right USB-A port, after "Rescan USB"; [Tow-Boot#153](https://github.com/Tow-Boot/Tow-Boot/issues/153)).
 - **The touchpad no longer freezes the keyboard** in the Tow-Boot menu (pbp2i; a bug in stock Tow-Boot since 2021, [Tow-Boot#57](https://github.com/Tow-Boot/Tow-Boot/issues/57)).
 - **Faster SD card** (pbp2g and later): 50 MHz instead of 20 MHz in Tow-Boot, so booting from SD loads about 65% faster.
 - A 1 s boot menu countdown instead of 2 s.
@@ -21,7 +22,8 @@ Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot
 
 | Version | Status | What's in it |
 |---|---|---|
-| **007-pbp2j** | **Tested**: in use on my Pinebook Pro since 2026-10-13 | pbp2i + upstream XHCI fixes (no reset on USB 3 timeouts) + keyboard fallback |
+| **007-pbp2k** | **Tested**: in use on my Pinebook Pro since 2026-10-13 | pbp2j + **external USB keyboards work** next to the internal one (0023, fixes Tow-Boot#153) |
+| 007-pbp2j | Tested 2026-10-13 | pbp2i + upstream XHCI fixes (no reset on USB 3 timeouts) + keyboard fallback |
 | 007-pbp2i | Tested 2026-10-13 | pbp2h + **touchpad no longer freezes the keyboard** in the menu (0011, fixes Tow-Boot#57) |
 | 007-pbp2h | Tested 2026-10-13 | pbp2f + SD at 50 MHz + one more btrfs fix (0010); version labels fixed |
 | 007-pbp2f | Tested: in use on my Pinebook Pro 2026-10-13 | pbp2c + faster USB start |
@@ -116,7 +118,7 @@ Measured with the arm generic timer (power-on to kernel start, normal boot, same
 
 **If the internal keyboard is missing or broken** (pbp2j, patch 0022): when the keyboard-only start at power-on finds no USB keyboard, U-Boot starts all controllers (`no USB keyboard found, starting all controllers...`), so a keyboard in the **right** USB-A port should work instead, as with stock Tow-Boot. Normally the internal keyboard is found and nothing changes. Tested by simulating it from the console (`usb stop; setenv usb_only usb@fe800000; usb start`): the full start ran and the keyboard came back. An external keyboard as the only keyboard isn't tested, since the internal one can't easily be unplugged.
 
-**External keyboards next to the internal one:** only the internal keyboard's controllers start at power-on. That loses nothing in practice: external USB keyboards don't work in the Tow-Boot menu on the Pinebook Pro even with stock Tow-Boot and every port scanned ([Tow-Boot#153](https://github.com/Tow-Boot/Tow-Boot/issues/153)); I tried one in each USB-A port with this build and it didn't work either. So pbp2h deliberately doesn't add the USB-A ports (right port = `usb@fe3c0000` behind an internal hub that also has the webcam, left port = `usb@fe900000`), which would only cost boot time. To scan everything at power-on anyway, set `preboot` back from the Firmware Console: `setenv preboot usb start; saveenv` (undo with `env default preboot; saveenv`).
+**External keyboards next to the internal one** (pbp2k): only the internal keyboard's controllers start at power-on, so pick **"Rescan USB"** first; after that a USB keyboard in the **right** USB-A port works alongside the internal one (patch 0023, see below). The left (USB 3) port can't take a keyboard. The USB-A ports aren't scanned at power-on (right port = `usb@fe3c0000` behind an internal hub that also has the webcam, left port = `usb@fe900000`) because that would cost boot time. To scan everything at power-on anyway, set `preboot` back from the Firmware Console: `setenv preboot usb start; saveenv` (undo with `env default preboot; saveenv`).
 
 An earlier attempt (pbp2e) disabled the other controllers in U-Boot's device tree instead. That was as fast, but then U-Boot never binds drivers for them, so USB boot was gone even after "Rescan USB".
 
@@ -141,7 +143,7 @@ Patch 0011 makes `usb_kbd` also set up an interrupt queue for the first interrup
 
 Two U-Boot limitations, both still in upstream master as of 2026:
 
-1. Every USB keyboard registers as console device `usbkbd`, and `usb_kbd_testc()`/`usb_kbd_getc()` look the device up again **by that name**, which always returns the first one: on a laptop, the internal keyboard. A second keyboard is never polled. (With the internal keyboard gone, the external one is first and works; see the fallback above.)
+1. Every USB keyboard registers as console device `usbkbd`, and `usb_kbd_testc()`/`usb_kbd_getc()` look the device up again **by that name**, which always returns the first one: on a laptop, the internal keyboard. A second keyboard is set up and registered (`coninfo` lists two `usbkbd`) but never polled. **Fixed in pbp2k (patch 0023):** `testc`/`getc` use the device they're called with, extra keyboards are named `usbkbd1`, `usbkbd2`, … and appended to `$stdin`, and each keyboard has its own poll timer. Tested: after "Rescan USB", the internal keyboard and a USB keyboard in the right port both work.
 2. The left USB-A port is a USB 3 (XHCI) controller (`usb@fe900000`). XHCI has no `create_int_queue`, which Tow-Boot's keyboard polling (`CONFIG_SYS_USB_EVENT_POLL_VIA_INT_QUEUE`) needs, so a keyboard there is rejected ("Failed to get keyboard state from device"); XHCI interrupt transfers also ignore `nonblock`. The right port (`usb@fe3c0000`, EHCI behind an internal hub that also has the webcam) can take a keyboard.
 
 In U-Boot 2023.07 an XHCI event timeout **panics and resets the board**, a likely cause of "Rescan USB" reboots ([Tow-Boot#141](https://github.com/Tow-Boot/Tow-Boot/issues/141)). Patches 0012–0021 backport upstream's XHCI robustness fixes, mostly Hector Martin's October 2023 series (`3aba92c9dd`, `8d1e03f984`, `2526cd9932`, `6f64f0ae23`, `9d88bd4dcf`, `fb5502be25`, `2fd7037122` "Do not panic on event timeouts", `a14843fdac`, `0b6775c402`, `ba94fb3003`). After that, "Rescan USB" (which starts and scans both XHCI controllers every time) came back to the menu without a reboot in 4 tries, with a USB keyboard in the right (USB 2.0) port; the USB 3 port itself was empty, so a device on the USB 3 port during a rescan is still untested. USB drives use bulk transfers, which XHCI does support, so both USB-A ports should boot a USB drive; **not tested yet** (no bootable stick at hand).
@@ -189,7 +191,7 @@ These are open bugs in stock Tow-Boot on the Pinebook Pro, and this build has th
 
 - ~~Touching the touchpad freezes the keyboard in the Tow-Boot menu~~ ([Tow-Boot#57](https://github.com/Tow-Boot/Tow-Boot/issues/57)): **fixed in pbp2i**, see "Touchpad froze the keyboard" above. In older builds and stock Tow-Boot: don't touch the touchpad in the menu.
 - **"Rescan USB" sometimes reboots** ([Tow-Boot#141](https://github.com/Tow-Boot/Tow-Boot/issues/141)), intermittently. Probably fixed in pbp2j (XHCI no longer panics on timeouts, see above): not reproduced in 4 rescans. Before that I also once saw a reboot right after pressing Enter in the console.
-- **External USB keyboards don't work in the menu** ([Tow-Boot#153](https://github.com/Tow-Boot/Tow-Boot/issues/153)).
+- ~~External USB keyboards don't work in the menu~~ ([Tow-Boot#153](https://github.com/Tow-Boot/Tow-Boot/issues/153)): **fixed in pbp2k** for the right USB-A port (after "Rescan USB"); the left (USB 3) port still can't take a keyboard.
 
 ## Good to know about Tow-Boot on the Pinebook Pro
 
@@ -205,7 +207,7 @@ These hold for stock Tow-Boot 2023.07-007 and this build:
 ## Building
 
 ```sh
-scripts/build.sh pbp2j     # or pbp2i, pbp2h, pbp2f, pbp2c, pbp1
+scripts/build.sh pbp2k     # or pbp2j, pbp2i, pbp2h, pbp2f, pbp2c, pbp1
 ```
 
 It checks out Tow-Boot `release-2023.07-007` (which builds [Tow-Boot/U-Boot](https://github.com/Tow-Boot/U-Boot) tag `tb-2023.07-007`) into `build/`, applies the patches and config from `nix/<variant>.nix`, puts the results in `out/<variant>/`, and runs `scripts/check-layout.sh` on the image. It uses `nix-build` if you have Nix. Otherwise it runs Nix in a `podman`/`docker` container, with the Nix store kept in a volume called `towboot-nix`. It cross-compiles on x86_64; the first build takes a while.

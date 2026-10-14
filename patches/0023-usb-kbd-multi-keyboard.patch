@@ -1,0 +1,159 @@
+From bb3889263526412d6922d83b35a87cd7afd7acb5 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Tue, 13 Oct 2026 20:56:57 -0700
+Subject: [PATCH] usb: kbd: support more than one USB keyboard
+
+Every USB keyboard registered as stdio device "usbkbd", and
+usb_kbd_testc()/usb_kbd_getc() looked the device up again by that name,
+which always returns the first keyboard. So a second keyboard was set up
+and registered but never read. On a laptop the internal keyboard is
+always first, which is why external USB keyboards don't work in the
+boot menu (Tow-Boot issue #153).
+
+- Use the stdio device we are called with (sdev->priv) instead of a
+  lookup by name, and keep the poll timer per keyboard.
+- Name extra keyboards usbkbd1, usbkbd2, ... and, if $stdin uses
+  "usbkbd", append their names to $stdin so they are read too.
+- On removal, use the keyboard's own name.
+---
+ common/usb_kbd.c | 55 ++++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 39 insertions(+), 16 deletions(-)
+
+diff --git a/common/usb_kbd.c b/common/usb_kbd.c
+index d53e8875..2b8cee4e 100644
+--- a/common/usb_kbd.c
++++ b/common/usb_kbd.c
+@@ -127,13 +127,13 @@ struct usb_kbd_pdata {
+ 	uint8_t		old[USB_KBD_BOOT_REPORT_SIZE];
+ 
+ 	uint8_t		flags;
++
++	char		name[16];	/* stdio name: usbkbd, usbkbd1, ... */
++	unsigned long	testc_tms;	/* last poll, see usb_kbd_testc() */
+ };
+ 
+ extern int __maybe_unused net_busy_flag;
+ 
+-/* The period of time between two calls of usb_kbd_testc(). */
+-static unsigned long kbd_testc_tms;
+-
+ /* Puts character in the queue and sets up the in and out pointer. */
+ static void usb_kbd_put_queue(struct usb_kbd_pdata *data, u8 c)
+ {
+@@ -461,7 +461,6 @@ static inline void usb_kbd_poll_for_event(struct usb_device *dev)
+ /* test if a character is in the queue */
+ static int usb_kbd_testc(struct stdio_dev *sdev)
+ {
+-	struct stdio_dev *dev;
+ 	struct usb_device *usb_kbd_dev;
+ 	struct usb_kbd_pdata *data;
+ 
+@@ -495,13 +494,17 @@ static int usb_kbd_testc(struct stdio_dev *sdev)
+ 		poll_delay = 0;
+ #endif
+ 
+-	dev = stdio_get_by_name(sdev->name);
+-	usb_kbd_dev = (struct usb_device *)dev->priv;
++	/*
++	 * Use the device we were called for. Looking it up by name returned
++	 * the first keyboard for every keyboard, so a second one (say, an
++	 * external keyboard on a laptop) was never read.
++	 */
++	usb_kbd_dev = (struct usb_device *)sdev->priv;
+ 	data = usb_kbd_dev->privptr;
+ 
+-	if (get_timer(kbd_testc_tms) >= poll_delay) {
++	if (get_timer(data->testc_tms) >= poll_delay) {
+ 		usb_kbd_poll_for_event(usb_kbd_dev);
+-		kbd_testc_tms = get_timer(0);
++		data->testc_tms = get_timer(0);
+ 	}
+ 
+ 	return !(data->usb_in_pointer == data->usb_out_pointer);
+@@ -510,7 +513,6 @@ static int usb_kbd_testc(struct stdio_dev *sdev)
+ /* gets the character from the queue */
+ static int usb_kbd_getc(struct stdio_dev *sdev)
+ {
+-	struct stdio_dev *dev;
+ 	struct usb_device *usb_kbd_dev;
+ 	struct usb_kbd_pdata *data;
+ 
+@@ -519,8 +521,7 @@ static int usb_kbd_getc(struct stdio_dev *sdev)
+ 	video_sync_dirty();
+ #endif
+ 
+-	dev = stdio_get_by_name(sdev->name);
+-	usb_kbd_dev = (struct usb_device *)dev->priv;
++	usb_kbd_dev = (struct usb_device *)sdev->priv;
+ 	data = usb_kbd_dev->privptr;
+ 
+ 	while (data->usb_in_pointer == data->usb_out_pointer) {
+@@ -643,16 +644,22 @@ static int probe_usb_keyboard(struct usb_device *dev)
+ {
+ 	char *stdinname;
+ 	struct stdio_dev usb_kbd_dev;
+-	int error;
++	struct usb_kbd_pdata *data;
++	int error, n;
+ 
+ 	/* Try probing the keyboard */
+ 	if (usb_kbd_probe_dev(dev, 0) != 1)
+ 		return -ENOENT;
++	data = dev->privptr;
+ 
+-	/* Register the keyboard */
++	/* Register the keyboard: "usbkbd", or "usbkbd1"... if that is taken */
+ 	debug("USB KBD: register.\n");
+ 	memset(&usb_kbd_dev, 0, sizeof(struct stdio_dev));
+ 	strcpy(usb_kbd_dev.name, DEVNAME);
++	for (n = 1; stdio_get_by_name(usb_kbd_dev.name) && n < 10; n++)
++		snprintf(usb_kbd_dev.name, sizeof(usb_kbd_dev.name),
++			 DEVNAME "%d", n);
++	strlcpy(data->name, usb_kbd_dev.name, sizeof(data->name));
+ 	usb_kbd_dev.flags =  DEV_FLAGS_INPUT;
+ 	usb_kbd_dev.getc = usb_kbd_getc;
+ 	usb_kbd_dev.tstc = usb_kbd_testc;
+@@ -664,6 +671,22 @@ static int probe_usb_keyboard(struct usb_device *dev)
+ 	stdinname = env_get("stdin");
+ #if CONFIG_IS_ENABLED(CONSOLE_MUX)
+ 	if (strstr(stdinname, DEVNAME) != NULL) {
++		/*
++		 * $stdin uses USB keyboards. Extra keyboards have their own
++		 * names, so add those to $stdin, then (re)apply it.
++		 */
++		if (strcmp(usb_kbd_dev.name, DEVNAME) &&
++		    !strstr(stdinname, usb_kbd_dev.name)) {
++			char *list = malloc(strlen(stdinname) +
++					    strlen(usb_kbd_dev.name) + 2);
++
++			if (!list)
++				return -ENOMEM;
++			sprintf(list, "%s,%s", stdinname, usb_kbd_dev.name);
++			env_set("stdin", list);
++			free(list);
++			stdinname = env_get("stdin");
++		}
+ 		error = iomux_doenv(stdin, stdinname);
+ 		if (error)
+ 			return error;
+@@ -763,14 +786,14 @@ static int usb_kbd_remove(struct udevice *dev)
+ 	struct stdio_dev *sdev;
+ 	int ret;
+ 
+-	sdev = stdio_get_by_name(DEVNAME);
++	data = udev->privptr;
++	sdev = stdio_get_by_name(data->name);
+ 	if (!sdev) {
+ 		ret = -ENXIO;
+ 		goto err;
+ 	}
+-	data = udev->privptr;
+ #if CONFIG_IS_ENABLED(CONSOLE_MUX)
+-	if (iomux_replace_device(stdin, DEVNAME, "nulldev")) {
++	if (iomux_replace_device(stdin, data->name, "nulldev")) {
+ 		ret = -ENOLINK;
+ 		goto err;
+ 	}
+-- 
+2.56.0
+
