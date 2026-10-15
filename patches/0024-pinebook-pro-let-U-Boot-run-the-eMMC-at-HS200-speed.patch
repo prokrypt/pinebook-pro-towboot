@@ -1,0 +1,30 @@
+From efcc1263ce4936902f53b9a9f5100d28bd5c8ec8 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Thu, 15 Oct 2026 12:47:47 -0700
+Subject: [PATCH 24/25] pinebook-pro: let U-Boot run the eMMC at HS200 speed
+
+The eMMC (sdhci) was capped at 25 MHz since Pinebook Pro support was
+added, without a stated reason, like the SD card's 20 MHz. rk3399-u-boot.dtsi
+uses 200 MHz for every other RK3399 board, the board DT already has
+mmc-hs200-1_8v, and Linux runs this eMMC in HS200 at 200 MHz. Loading
+the kernel + initramfs (42 MB) took 1.9 s at 25 MHz.
+---
+ arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi b/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
+index 6a7656a..fcabc92 100644
+--- a/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
++++ b/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
+@@ -26,7 +26,7 @@
+ };
+ 
+ &sdhci {
+-	max-frequency = <25000000>;
++	max-frequency = <200000000>;
+ 	bootph-all;
+ };
+ 
+-- 
+2.56.0
+

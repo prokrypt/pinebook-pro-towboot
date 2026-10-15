@@ -12,6 +12,7 @@ What it fixes or adds:
 - **Less battery drain in suspend** (pbp2m): the big-core and GPU regulators are switched off during deep sleep, as Rockchip's own firmware does (TF-A patch).
 - **External USB keyboards work in the Tow-Boot menu** next to the internal one (pbp2k; right USB-A port, after "Rescan USB"; [Tow-Boot#153](https://github.com/Tow-Boot/Tow-Boot/issues/153)).
 - **The touchpad no longer freezes the keyboard** in the Tow-Boot menu (pbp2i; a bug in stock Tow-Boot since 2021, [Tow-Boot#57](https://github.com/Tow-Boot/Tow-Boot/issues/57)).
+- **Faster eMMC** (pbp2n): HS200 at up to 200 MHz instead of 25 MHz, so the kernel and initramfs load faster.
 - **Faster SD card** (pbp2g and later): 50 MHz instead of 20 MHz in Tow-Boot, so booting from SD loads about 65% faster.
 - A 1 s boot menu countdown instead of 2 s.
 
@@ -23,7 +24,8 @@ Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot
 
 | Version | Status | What's in it |
 |---|---|---|
-| **007-pbp2m** | **Tested**: in use on my Pinebook Pro since 2026-10-15 | pbp2k + **big-core and GPU regulators off in suspend** (TF-A patch `tfa-0001`) |
+| **007-pbp2n** | **Tested**: in use on my Pinebook Pro since 2026-10-15 | pbp2m + **eMMC in HS200** (patch 0024) |
+| 007-pbp2m | Tested 2026-10-15 | pbp2k + **big-core and GPU regulators off in suspend** (TF-A patch `tfa-0001`) |
 | ~~007-pbp2l~~ | Not released: its TF-A change never took effect (see below) | pbp2k + first try of the suspend change |
 | 007-pbp2k | Tested: in use on my Pinebook Pro 2026-10-13 to 10-15 | pbp2j + **external USB keyboards work** next to the internal one (0023, fixes Tow-Boot#153) |
 | 007-pbp2j | Tested 2026-10-13 | pbp2i + upstream XHCI fixes (no reset on USB 3 timeouts) + keyboard fallback |
@@ -159,6 +161,26 @@ Mainline TF-A has the same mechanism (`suspend_gpio()`/`resume_gpio()` in `plat/
 
 Tested 2026-10-15: suspend and resume work, all six cores and the GPU come back, and after a wake both pins read as outputs, low, which only TF-A's `resume_gpio()` leaves them as. How much it saves isn't measured yet. Before the change, suspend drained about 0.46 %/h on my machine, and Rockchip's firmware reportedly gets 0.2–0.3 %/h.
 
+### Faster eMMC: HS200 (pbp2n, patch 0024), and why not HS400
+
+The Pinebook Pro's U-Boot device tree capped the eMMC at **25 MHz** (`max-frequency` on `&sdhci` in `rk3399-pinebook-pro-u-boot.dtsi`). The cap dates from the first Pinebook Pro commit (2020), with no reason given. Every other RK3399 board gets 200 MHz from `rk3399-u-boot.dtsi`, and the board DT already allows HS200 (`mmc-hs200-1_8v`). At 25 MHz, the kernel + initramfs (about 42 MB) took about 1.9 s to load. Patch 0024 sets 200 MHz, and U-Boot then uses HS200, as Linux does.
+
+**HS400 doesn't work on this board** (tested 2026-10-15 with a SanDisk DA4064 eMMC, which reports HS400 and Enhanced Strobe support). Rockchip's own Android device tree for the Pinebook Pro only enables HS200 too.
+- Linux with `mmc-hs400-1_8v` + `mmc-hs400-enhanced-strobe` couldn't find its root filesystem.
+- U-Boot with HS400 Enhanced Strobe loaded the kernel fine, but Linux (in HS200) then failed to take over the eMMC and didn't finish booting.
+
+HS200 in U-Boot followed by HS200 in Linux works.
+
+**Boot time** (power-on to kernel start, my Pinebook Pro, `/boot` on btrfs):
+
+| Kernel | How it's stored | Power-on → kernel |
+|---|---|---|
+| `Image.gz` | gzip | 17.8 s |
+| `Image` | btrfs zstd compression | 19.2 s |
+| `Image` | btrfs, no compression | **15.3 s** |
+
+With the eMMC at HS200, reading the raw 48 MB kernel is faster than unpacking it. U-Boot's gunzip and its btrfs zstd decompression are both slow. To keep `/boot` uncompressed on btrfs, run `chattr +m /boot` (new files inherit it). Then rewrite existing files with `cp --reflink=never` and `mv`; a plain `cp` reflinks and keeps the old compressed data.
+
 ### Device-tree overlays
 
 `CONFIG_OF_LIBFDT_OVERLAY=y`, so `FDTOVERLAYS /path/a.dtbo /path/b.dtbo` in an `extlinux.conf` entry is applied. Stock 2023.07-007 is built without it and silently ignores the line (the firmware contains the message `config with overlays but CONFIG_OF_LIBFDT_OVERLAY not set`). Overlays can only add or change properties, not delete them. If you need to delete one, merge the dtb yourself with `fdtoverlay` + `fdtput -d`.
@@ -218,7 +240,7 @@ These hold for stock Tow-Boot 2023.07-007 and this build:
 ## Building
 
 ```sh
-scripts/build.sh pbp2m     # or pbp2l, pbp2k, pbp2j, pbp2i, pbp2h, pbp2f, pbp2c, pbp1
+scripts/build.sh pbp2n     # or pbp2m, pbp2l, pbp2k, pbp2j, pbp2i, pbp2h, pbp2f, pbp2c, pbp1
 ```
 
 It checks out Tow-Boot `release-2023.07-007` (which builds [Tow-Boot/U-Boot](https://github.com/Tow-Boot/U-Boot) tag `tb-2023.07-007`) into `build/`, applies the patches and config from `nix/<variant>.nix`, puts the results in `out/<variant>/`, and runs `scripts/check-layout.sh` on the image. It uses `nix-build` if you have Nix. Otherwise it runs Nix in a `podman`/`docker` container, with the Nix store kept in a volume called `towboot-nix`. It cross-compiles on x86_64; the first build takes a while.

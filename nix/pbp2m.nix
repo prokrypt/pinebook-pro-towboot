@@ -1,4 +1,4 @@
-# 007-pbp2m: the current build.
+# 007-pbp2m: big-core and GPU regulators off in suspend.
 #  - pbp1: backlight off at kernel handoff, dimmer Tow-Boot screen, FDTOVERLAYS,
 #    1 s countdown (patch 0001)
 #  - btrfs, with fixes backported from U-Boot master (patches 0002-0007, 0010)

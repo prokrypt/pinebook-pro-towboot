@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build a variant (pbp1, pbp2c, pbp2f, pbp2h, pbp2i, pbp2j, pbp2k, pbp2l or pbp2m) of this Tow-Boot for the Pinebook Pro.
+# Build a variant (pbp1, pbp2c, pbp2f, pbp2h, pbp2i, pbp2j, pbp2k, pbp2l, pbp2m or pbp2n) of this Tow-Boot for the Pinebook Pro.
 #
 #   scripts/build.sh pbp2k
 #
