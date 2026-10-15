@@ -1,0 +1,64 @@
+diff --git a/plat/rockchip/common/params_setup.c b/plat/rockchip/common/params_setup.c
+index 68054ad..c2dfd7a 100644
+--- a/plat/rockchip/common/params_setup.c
++++ b/plat/rockchip/common/params_setup.c
+@@ -132,6 +132,36 @@ static void plat_rockchip_dt_process_fdt_uart(void *fdt)
+ 	rk_uart_baudrate = baud;
+ }
+ 
++/*
++ * Pinebook Pro: the big-cluster (SYR827) and GPU (SYR828) regulators run from
++ * the battery side, so the RK808 sleep pin doesn't cut them. Their VSEL pins,
++ * CPU_B_SLEEP_H (GPIO1_C1) and GPU_SLEEP_H (GPIO1_B6), select the register
++ * Linux programs as "off in suspend" (fcs,suspend-voltage-selector = 1).
++ * Rockchip's own BL31 drives both high in sleep (rockchip,power-ctrl in the
++ * vendor device tree). U-Boot passes an FDT rather than bl_aux params, so add
++ * them here when the FDT is a Pinebook Pro's.
++ */
++static void plat_rockchip_dt_process_fdt_suspend_gpio(void *fdt)
++{
++	static const uint32_t pins[] = {
++		1 * 32 + 2 * 8 + 1,	/* GPIO1_C1 CPU_B_SLEEP_H */
++		1 * 32 + 1 * 8 + 6,	/* GPIO1_B6 GPU_SLEEP_H */
++	};
++	unsigned int i;
++
++	if (fdt_node_check_compatible(fdt, 0, "pine64,pinebook-pro") != 0)
++		return;
++
++	for (i = 0; i < ARRAY_SIZE(pins) &&
++	     suspend_gpio_cnt < ARRAY_SIZE(suspend_gpio); i++) {
++		suspend_gpio[suspend_gpio_cnt].index = pins[i];
++		suspend_gpio[suspend_gpio_cnt].polarity = ARM_TF_GPIO_LEVEL_HIGH;
++		suspend_gpio[suspend_gpio_cnt].direction = ARM_TF_GPIO_DIR_OUT;
++		suspend_gpio[suspend_gpio_cnt].pull_mode = ARM_TF_GPIO_PULL_NONE;
++		suspend_gpio_cnt++;
++	}
++}
++
+ static int dt_process_fdt(u_register_t param_from_bl2)
+ {
+ 	void *fdt = plat_get_fdt();
+@@ -142,6 +172,7 @@ static int dt_process_fdt(u_register_t param_from_bl2)
+ 		return ret;
+ 
+ 	plat_rockchip_dt_process_fdt_uart(fdt);
++	plat_rockchip_dt_process_fdt_suspend_gpio(fdt);
+ 
+ 	return 0;
+ }
+diff --git a/plat/rockchip/rk3399/drivers/pmu/pmu.c b/plat/rockchip/rk3399/drivers/pmu/pmu.c
+index 7bdefcc..3e7b6f3 100644
+--- a/plat/rockchip/rk3399/drivers/pmu/pmu.c
++++ b/plat/rockchip/rk3399/drivers/pmu/pmu.c
+@@ -1084,6 +1084,10 @@ static void resume_gpio(void)
+ 		gpio_set_direction(suspend_gpio[i].index, GPIO_DIR_OUT);
+ 		udelay(1);
+ 	}
++
++	/* Let regulators switched back on by these pins soft-start. */
++	if (count > 0)
++		udelay(1000);
+ }
+ 
+ void sram_save(void)

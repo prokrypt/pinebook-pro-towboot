@@ -9,6 +9,7 @@ What it fixes or adds:
 - **`/boot` on btrfs** (pbp2c). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
 - **Device-tree overlays.** `FDTOVERLAYS` in `extlinux.conf` works. Stock Tow-Boot is built without overlay support and silently ignores it.
 - **Faster boot** (pbp2f): only the internal keyboard's USB controller is started at power-on, about 5.7 s quicker on my Pinebook Pro. "Rescan USB" and "Boot from USB" still use every port.
+- **Less battery drain in suspend** (pbp2m): the big-core and GPU regulators are switched off during deep sleep, as Rockchip's own firmware does (TF-A patch).
 - **External USB keyboards work in the Tow-Boot menu** next to the internal one (pbp2k; right USB-A port, after "Rescan USB"; [Tow-Boot#153](https://github.com/Tow-Boot/Tow-Boot/issues/153)).
 - **The touchpad no longer freezes the keyboard** in the Tow-Boot menu (pbp2i; a bug in stock Tow-Boot since 2021, [Tow-Boot#57](https://github.com/Tow-Boot/Tow-Boot/issues/57)).
 - **Faster SD card** (pbp2g and later): 50 MHz instead of 20 MHz in Tow-Boot, so booting from SD loads about 65% faster.
@@ -22,7 +23,9 @@ Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot
 
 | Version | Status | What's in it |
 |---|---|---|
-| **007-pbp2k** | **Tested**: in use on my Pinebook Pro since 2026-10-13 | pbp2j + **external USB keyboards work** next to the internal one (0023, fixes Tow-Boot#153) |
+| **007-pbp2m** | **Tested**: in use on my Pinebook Pro since 2026-10-15 | pbp2k + **big-core and GPU regulators off in suspend** (TF-A patch `tfa-0001`) |
+| ~~007-pbp2l~~ | Not released: its TF-A change never took effect (see below) | pbp2k + first try of the suspend change |
+| 007-pbp2k | Tested: in use on my Pinebook Pro 2026-10-13 to 10-15 | pbp2j + **external USB keyboards work** next to the internal one (0023, fixes Tow-Boot#153) |
 | 007-pbp2j | Tested 2026-10-13 | pbp2i + upstream XHCI fixes (no reset on USB 3 timeouts) + keyboard fallback |
 | 007-pbp2i | Tested 2026-10-13 | pbp2h + **touchpad no longer freezes the keyboard** in the menu (0011, fixes Tow-Boot#57) |
 | 007-pbp2h | Tested 2026-10-13 | pbp2f + SD at 50 MHz + one more btrfs fix (0010); version labels fixed |
@@ -148,6 +151,14 @@ Two U-Boot limitations, both still in upstream master as of 2026:
 
 In U-Boot 2023.07 an XHCI event timeout **panics and resets the board**, a likely cause of "Rescan USB" reboots ([Tow-Boot#141](https://github.com/Tow-Boot/Tow-Boot/issues/141)). Patches 0012–0021 backport upstream's XHCI robustness fixes, mostly Hector Martin's October 2023 series (`3aba92c9dd`, `8d1e03f984`, `2526cd9932`, `6f64f0ae23`, `9d88bd4dcf`, `fb5502be25`, `2fd7037122` "Do not panic on event timeouts", `a14843fdac`, `0b6775c402`, `ba94fb3003`). After that, "Rescan USB" (which starts and scans both XHCI controllers every time) came back to the menu without a reboot in 4 tries, with a USB keyboard in the right (USB 2.0) port; the USB 3 port itself was empty, so a device on the USB 3 port during a rescan is still untested. USB drives use bulk transfers, which XHCI does support, so both USB-A ports should boot a USB drive; **not tested yet** (no bootable stick at hand).
 
+### Big-core and GPU regulators off in suspend (pbp2m, TF-A patch)
+
+The big CPU cluster (`vdd_cpu_b`, Silergy SYR827) and the GPU (`vdd_gpu`, SYR828) have their own regulators, fed from the battery side, so the RK808 PMIC going to sleep doesn't cut them: they stayed on all night in deep suspend. Each has a VSEL pin that picks one of two voltage registers: `CPU_B_SLEEP_H` on **GPIO1_C1** and `GPU_SLEEP_H` on **GPIO1_B6**. Linux already marks register 1 "off in suspend" (`fcs,suspend-voltage-selector = <1>` plus `regulator-off-in-suspend` in the mainline device tree), but nothing ever drives the pins high, so register 1 is never used. Rockchip's own BL31 does: the vendor device tree has `rockchip,power-ctrl = <&gpio1 17 GPIO_ACTIVE_HIGH>, <&gpio1 14 GPIO_ACTIVE_HIGH>`.
+
+Mainline TF-A has the same mechanism (`suspend_gpio()`/`resume_gpio()` in `plat/rockchip/rk3399/drivers/pmu/pmu.c`, run as the very last step before sleep and the first on wake), but only fills the pin list from coreboot's `bl_aux` parameters. U-Boot passes none, and with `CONFIG_SPL_ATF_NO_PLATFORM_PARAM=y` (the RK3399 default) not even a device tree. `patches/tfa-0001-pbp-suspend-gpios.patch` (against TF-A v2.9, the version Tow-Boot 007 builds) adds the two pins in `params_early_setup()`. It also waits 1 ms after the pins drop on wake, so the regulators can soft-start before TF-A touches the big cluster. The nix file overrides `Tow-Boot.builder.additionalArguments.BL31` with the patched TF-A. pbp2l had a first version that only added the pins when U-Boot's device tree said Pinebook Pro. U-Boot never passes one, so that version did nothing.
+
+Tested 2026-10-15: suspend and resume work, all six cores and the GPU come back, and after a wake both pins read as outputs, low, which only TF-A's `resume_gpio()` leaves them as. How much it saves isn't measured yet. Before the change, suspend drained about 0.46 %/h on my machine, and Rockchip's firmware reportedly gets 0.2–0.3 %/h.
+
 ### Device-tree overlays
 
 `CONFIG_OF_LIBFDT_OVERLAY=y`, so `FDTOVERLAYS /path/a.dtbo /path/b.dtbo` in an `extlinux.conf` entry is applied. Stock 2023.07-007 is built without it and silently ignores the line (the firmware contains the message `config with overlays but CONFIG_OF_LIBFDT_OVERLAY not set`). Overlays can only add or change properties, not delete them. If you need to delete one, merge the dtb yourself with `fdtoverlay` + `fdtput -d`.
@@ -207,7 +218,7 @@ These hold for stock Tow-Boot 2023.07-007 and this build:
 ## Building
 
 ```sh
-scripts/build.sh pbp2k     # or pbp2j, pbp2i, pbp2h, pbp2f, pbp2c, pbp1
+scripts/build.sh pbp2m     # or pbp2l, pbp2k, pbp2j, pbp2i, pbp2h, pbp2f, pbp2c, pbp1
 ```
 
 It checks out Tow-Boot `release-2023.07-007` (which builds [Tow-Boot/U-Boot](https://github.com/Tow-Boot/U-Boot) tag `tb-2023.07-007`) into `build/`, applies the patches and config from `nix/<variant>.nix`, puts the results in `out/<variant>/`, and runs `scripts/check-layout.sh` on the image. It uses `nix-build` if you have Nix. Otherwise it runs Nix in a `podman`/`docker` container, with the Nix store kept in a volume called `towboot-nix`. It cross-compiles on x86_64; the first build takes a while.

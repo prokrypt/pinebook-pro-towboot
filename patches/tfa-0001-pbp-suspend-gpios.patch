@@ -1,0 +1,60 @@
+diff --git a/plat/rockchip/common/params_setup.c b/plat/rockchip/common/params_setup.c
+index 68054ad..4554c87 100644
+--- a/plat/rockchip/common/params_setup.c
++++ b/plat/rockchip/common/params_setup.c
+@@ -228,10 +228,40 @@ static bool rk_aux_param_handler(struct bl_aux_param_header *param)
+ 	return false;
+ }
+ 
++/*
++ * Pinebook Pro (this BL31 is only built into a Pinebook Pro Tow-Boot): the
++ * big-cluster (SYR827) and GPU (SYR828) regulators run from the battery side,
++ * so the RK808 sleep pin doesn't cut them. Their VSEL pins, CPU_B_SLEEP_H
++ * (GPIO1_C1) and GPU_SLEEP_H (GPIO1_B6), select the register Linux programs as
++ * "off in suspend" (fcs,suspend-voltage-selector = 1). Rockchip's own BL31
++ * drives both high in sleep (rockchip,power-ctrl in the vendor device tree).
++ * U-Boot passes neither bl_aux params nor (with SPL_ATF_NO_PLATFORM_PARAM) an
++ * FDT, so set them here.
++ */
++static void plat_rockchip_pbp_suspend_gpio(void)
++{
++	static const uint32_t pins[] = {
++		1 * 32 + 2 * 8 + 1,	/* GPIO1_C1 CPU_B_SLEEP_H */
++		1 * 32 + 1 * 8 + 6,	/* GPIO1_B6 GPU_SLEEP_H */
++	};
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(pins) &&
++	     suspend_gpio_cnt < ARRAY_SIZE(suspend_gpio); i++) {
++		suspend_gpio[suspend_gpio_cnt].index = pins[i];
++		suspend_gpio[suspend_gpio_cnt].polarity = ARM_TF_GPIO_LEVEL_HIGH;
++		suspend_gpio[suspend_gpio_cnt].direction = ARM_TF_GPIO_DIR_OUT;
++		suspend_gpio[suspend_gpio_cnt].pull_mode = ARM_TF_GPIO_PULL_NONE;
++		suspend_gpio_cnt++;
++	}
++}
++
+ void params_early_setup(u_register_t plat_param_from_bl2)
+ {
+ 	int ret;
+ 
++	plat_rockchip_pbp_suspend_gpio();
++
+ 	/*
+ 	 * Test if this is a FDT passed as a platform-specific parameter
+ 	 * block.
+diff --git a/plat/rockchip/rk3399/drivers/pmu/pmu.c b/plat/rockchip/rk3399/drivers/pmu/pmu.c
+index 7bdefcc..3e7b6f3 100644
+--- a/plat/rockchip/rk3399/drivers/pmu/pmu.c
++++ b/plat/rockchip/rk3399/drivers/pmu/pmu.c
+@@ -1084,6 +1084,10 @@ static void resume_gpio(void)
+ 		gpio_set_direction(suspend_gpio[i].index, GPIO_DIR_OUT);
+ 		udelay(1);
+ 	}
++
++	/* Let regulators switched back on by these pins soft-start. */
++	if (count > 0)
++		udelay(1000);
+ }
+ 
+ void sram_save(void)
