@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 21:10:18 -0700
+Subject: [PATCH] pinebook-pro: read the SPI flash at 25 MHz instead of 10 MHz
+
+The flash node has spi-max-frequency = <10000000>, so SPL reads the
+1.2 MB U-Boot FIT at about 10 MHz on every boot. On this Pinebook Pro,
+reads in U-Boot are correct at 9.9, 14.1, 19.8, 24.75 and 33 MHz and
+wrong at 49.5 MHz (the controller divides 198 MHz by even numbers).
+Use 25 MHz (24.75 MHz real), well below the speed that fails.
+CONFIG_SF_DEFAULT_SPEED is set to the same value in the board recipe,
+because SPL's spi_flash_probe() passes it and it overrides the DT speed.
+---
+ arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi b/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
+index 2e3573f..3802368 100644
+--- a/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
++++ b/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
+@@ -31,6 +31,7 @@
+ };
+ 
+ &spiflash {
++	spi-max-frequency = <25000000>;
+ 	bootph-all;
+ };
+ 
+-- 
+2.56.0
+

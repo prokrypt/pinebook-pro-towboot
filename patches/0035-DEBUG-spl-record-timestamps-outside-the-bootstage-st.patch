@@ -1,0 +1,157 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 23:03:38 -0700
+Subject: [PATCH 35/37] DEBUG spl: record timestamps outside the bootstage
+ stash
+
+SPL's bootstage records don't reach U-Boot proper on this board (the
+TPL ones do; not investigated). To split the time between the end of
+TPL and U-Boot proper anyway, SPL writes timer_get_boot_us() at four
+points (start of board_init_f, after spl_early_init, after the images
+are loaded, just before TF-A) to a fixed DRAM address, and U-Boot proper
+turns them into bootstage records in initf_bootstage().
+
+For measuring only; not meant for a release.
+---
+ arch/arm/mach-rockchip/spl.c |  3 +++
+ common/board_f.c             | 20 ++++++++++++++++++++
+ common/spl/spl.c             |  1 +
+ common/spl/spl_atf.c         |  2 ++
+ include/bootstage.h          | 30 ++++++++++++++++++++++++++++++
+ 5 files changed, 56 insertions(+)
+
+diff --git a/arch/arm/mach-rockchip/spl.c b/arch/arm/mach-rockchip/spl.c
+index 12cea315..287714d4 100644
+--- a/arch/arm/mach-rockchip/spl.c
++++ b/arch/arm/mach-rockchip/spl.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include <common.h>
++#include <bootstage.h>
+ #include <cpu_func.h>
+ #include <debug_uart.h>
+ #include <dm.h>
+@@ -123,6 +124,7 @@ void board_init_f(ulong dummy)
+ 	 */
+ 	icache_enable();
+ #endif
++	spl_time_mark(0);
+ 
+ #ifdef CONFIG_DEBUG_UART
+ 	/*
+@@ -144,6 +146,7 @@ void board_init_f(ulong dummy)
+ 		printf("spl_early_init() failed: %d\n", ret);
+ 		hang();
+ 	}
++	spl_time_mark(1);
+ 	arch_cpu_init();
+ 
+ 	rockchip_stimer_init();
+diff --git a/common/board_f.c b/common/board_f.c
+index ba81b8cd..297abcae 100644
+--- a/common/board_f.c
++++ b/common/board_f.c
+@@ -802,6 +802,26 @@ static int initf_bootstage(void)
+ 		}
+ 	}
+ 
++#ifdef CONFIG_BOOTSTAGE
++	{
++		static const char *const names[SPL_TIMES_COUNT] = {
++			"spl start", "spl dm ready", "spl images loaded",
++			"spl to tf-a",
++		};
++		ulong *p = (ulong *)SPL_TIMES_ADDR;
++		int i;
++
++		if (p[0] == SPL_TIMES_MAGIC) {
++			for (i = 0; i < SPL_TIMES_COUNT; i++)
++				if (p[1 + i])
++					bootstage_add_record(BOOTSTAGE_ID_ALLOC,
++							     names[i],
++							     BOOTSTAGEF_ALLOC,
++							     p[1 + i]);
++			p[0] = 0;	/* don't reuse them after a reset */
++		}
++	}
++#endif
+ 	bootstage_mark_name(BOOTSTAGE_ID_START_UBOOT_F, "board_init_f");
+ 
+ 	return 0;
+diff --git a/common/spl/spl.c b/common/spl/spl.c
+index 54283b45..8f29222d 100644
+--- a/common/spl/spl.c
++++ b/common/spl/spl.c
+@@ -819,6 +819,7 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
+ 
+ 	ret = boot_from_devices(&spl_image, spl_boot_list,
+ 				ARRAY_SIZE(spl_boot_list));
++	spl_time_mark(2);
+ 	if (ret) {
+ 		if (CONFIG_IS_ENABLED(SHOW_ERRORS) &&
+ 		    CONFIG_IS_ENABLED(LIBCOMMON_SUPPORT))
+diff --git a/common/spl/spl_atf.c b/common/spl/spl_atf.c
+index 645bfd6b..62c3d186 100644
+--- a/common/spl/spl_atf.c
++++ b/common/spl/spl_atf.c
+@@ -11,6 +11,7 @@
+ 
+ #include <common.h>
+ #include <atf_common.h>
++#include <bootstage.h>
+ #include <cpu_func.h>
+ #include <errno.h>
+ #include <image.h>
+@@ -208,6 +209,7 @@ static void bl31_entry(uintptr_t bl31_entry, uintptr_t bl32_entry,
+ 	/* Hand over with the instruction cache off as well, as before */
+ 	icache_disable();
+ 	invalidate_icache_all();
++	spl_time_mark(3);
+ 
+ 	atf_entry(bl31_params, (void *)fdt_addr);
+ }
+diff --git a/include/bootstage.h b/include/bootstage.h
+index 4a53b065..3135307c 100644
+--- a/include/bootstage.h
++++ b/include/bootstage.h
+@@ -331,6 +331,36 @@ uint32_t bootstage_start(enum bootstage_id id, const char *name);
+  */
+ uint32_t bootstage_accum(enum bootstage_id id);
+ 
++/*
++ * SPL timestamps that don't depend on the bootstage stash: SPL writes
++ * timer_get_boot_us() at a few points to a fixed DRAM address and U-Boot
++ * proper turns them into records in initf_bootstage().
++ */
++#define SPL_TIMES_ADDR		0x03001000
++#define SPL_TIMES_MAGIC		0x5e17a3e5
++#define SPL_TIMES_COUNT		4
++
++#if defined(CONFIG_SPL_BUILD) && !defined(CONFIG_TPL_BUILD) && \
++	defined(CONFIG_SPL_BOOTSTAGE) && !defined(USE_HOSTCC)
++static inline void spl_time_mark(int i)
++{
++	ulong *p = (ulong *)SPL_TIMES_ADDR;
++
++	if (!i) {
++		int j;
++
++		for (j = 1; j <= SPL_TIMES_COUNT; j++)
++			p[j] = 0;
++		p[0] = SPL_TIMES_MAGIC;
++	}
++	p[1 + i] = timer_get_boot_us();
++}
++#else
++static inline void spl_time_mark(int i)
++{
++}
++#endif
++
+ /**
+  * bootstage_slow() - record something in U-Boot proper that took a while
+  *
+-- 
+2.56.0
+

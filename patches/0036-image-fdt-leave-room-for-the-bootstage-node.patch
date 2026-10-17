@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 23:03:38 -0700
+Subject: [PATCH 36/37] image-fdt: leave room for the bootstage node
+
+image_setup_libfdt() shrinks the device tree to its minimum size, and
+announce_and_cleanup() only adds the bootstage node after that, so with
+more than a few dozen records it runs out of space. The records are
+written newest first, so the ones that get lost are the oldest: TPL,
+SPL and the start of U-Boot proper. With CONFIG_BOOTSTAGE_FDT, keep
+8 KB free.
+---
+ boot/image-fdt.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/boot/image-fdt.c b/boot/image-fdt.c
+index f10200f6..9578e0d1 100644
+--- a/boot/image-fdt.c
++++ b/boot/image-fdt.c
+@@ -686,7 +686,13 @@ int image_setup_libfdt(struct bootm_headers *images, void *blob,
+ 		lmb_free(lmb, (phys_addr_t)(u32)(uintptr_t)blob,
+ 			 (phys_size_t)fdt_totalsize(blob));
+ 
+-	ret = fdt_shrink_to_minimum(blob, 0);
++	/*
++	 * Leave room for the bootstage node, which announce_and_cleanup()
++	 * adds after this: without it the oldest records (TPL, SPL) were
++	 * the ones that didn't fit.
++	 */
++	ret = fdt_shrink_to_minimum(blob,
++				    IS_ENABLED(CONFIG_BOOTSTAGE_FDT) ? 0x2000 : 0);
+ 	if (ret < 0)
+ 		goto err;
+ 	of_size = ret;
+-- 
+2.56.0
+

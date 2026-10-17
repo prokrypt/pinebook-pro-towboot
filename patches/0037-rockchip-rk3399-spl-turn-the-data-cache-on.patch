@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 23:55:59 -0700
+Subject: [PATCH 37/37] rockchip: rk3399: spl: turn the data cache on
+
+With only the instruction cache on, SPL on a Pinebook Pro still took
+1.5 s to read U-Boot and TF-A (1.2 MB) from SPI flash: every access to
+the stack and to the destination buffer went to DRAM uncached.
+
+DRAM is already set up by TPL, so after spl_early_init() put the page
+tables at a free DRAM address and enable the data cache. rk3399_mem_map
+maps DRAM as normal memory and everything from 0xf8000000 (peripherals,
+SRAM, where SPL also writes parts of TF-A) as device memory.
+bl31_entry() already flushes and disables the data cache before
+entering TF-A.
+---
+ arch/arm/mach-rockchip/spl.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/arch/arm/mach-rockchip/spl.c b/arch/arm/mach-rockchip/spl.c
+index 287714d4..825e794b 100644
+--- a/arch/arm/mach-rockchip/spl.c
++++ b/arch/arm/mach-rockchip/spl.c
+@@ -17,6 +17,7 @@
+ #include <asm/arch-rockchip/bootrom.h>
+ #include <asm/global_data.h>
+ #include <asm/io.h>
++#include <asm/system.h>
+ #include <linux/bitops.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+@@ -110,6 +111,9 @@ __weak int arch_cpu_init(void)
+ 	return 0;
+ }
+ 
++/* Free DRAM, 64 KB aligned: above the bootstage stash and SPL timestamps */
++#define SPL_PGTABLE_ADDR	0x03100000
++
+ void board_init_f(ulong dummy)
+ {
+ 	int ret;
+@@ -147,6 +151,22 @@ void board_init_f(ulong dummy)
+ 		hang();
+ 	}
+ 	spl_time_mark(1);
++
++#if defined(CONFIG_ARM64) && defined(CONFIG_ROCKCHIP_RK3399) && \
++	!CONFIG_IS_ENABLED(SYS_DCACHE_OFF)
++	/*
++	 * Without the data cache every access to the stack and to the
++	 * destination buffer goes to DRAM uncached, and reading U-Boot and
++	 * TF-A from SPI flash took 1.5 s for 1.2 MB on RK3399. DRAM is up
++	 * (TPL), so put the page tables in a free spot of it and turn the
++	 * cache on. The memory map (rk3399_mem_map) maps the peripherals
++	 * and SRAM as device memory. bl31_entry() flushes and disables the
++	 * cache again before TF-A.
++	 */
++	gd->arch.tlb_size = PGTABLE_SIZE;
++	gd->arch.tlb_addr = SPL_PGTABLE_ADDR;
++	dcache_enable();
++#endif
+ 	arch_cpu_init();
+ 
+ 	rockchip_stimer_init();
+-- 
+2.56.0
+

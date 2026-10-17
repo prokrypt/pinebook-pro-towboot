@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 21:59:37 -0700
+Subject: [PATCH 32/32] board_f: arm64: turn the instruction cache on before
+ relocation
+
+U-Boot proper starts with both caches off and only enables them in
+board_init_r(). Without the instruction cache every instruction is
+fetched from DRAM, so all of board_init_f() runs several times slower:
+on a Pinebook Pro (RK3399) it took 1.1 s, most of it in initf_dm() and
+serial_init().
+
+On ARMv8 the instruction cache works with the MMU off: instruction
+fetches are then treated as Normal, cacheable memory. relocate_code()
+already invalidates the instruction cache after copying U-Boot, so it is
+safe to enable it as the first init function. The data cache needs the
+MMU and stays off until enable_caches().
+---
+ common/board_f.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/common/board_f.c b/common/board_f.c
+index 1688e270..ba81b8cd 100644
+--- a/common/board_f.c
++++ b/common/board_f.c
+@@ -286,6 +286,24 @@ __weak int init_func_vid(void)
+ }
+ #endif
+ 
++#if defined(CONFIG_ARM64) && !CONFIG_IS_ENABLED(SYS_ICACHE_OFF)
++/*
++ * U-Boot proper starts with both caches off and only turns them on after
++ * relocation (enable_caches()). Without the instruction cache every
++ * instruction is fetched from DRAM, which makes everything before
++ * relocation several times slower. On ARMv8 the instruction cache works
++ * with the MMU off (fetches are then Normal, cacheable memory), and
++ * relocate_code() already invalidates it after copying U-Boot, so turn it
++ * on first thing. The data cache still needs the MMU and stays off.
++ */
++static int initf_icache(void)
++{
++	icache_enable();
++
++	return 0;
++}
++#endif
++
+ static int setup_mon_len(void)
+ {
+ #if defined(__ARM__) || defined(__MICROBLAZE__)
+@@ -832,6 +850,9 @@ static int misc_init_f(void)
+ }
+ 
+ static const init_fnc_t init_sequence_f[] = {
++#if defined(CONFIG_ARM64) && !CONFIG_IS_ENABLED(SYS_ICACHE_OFF)
++	initf_icache,
++#endif
+ 	setup_mon_len,
+ #ifdef CONFIG_OF_CONTROL
+ 	fdtdec_setup,
+-- 
+2.56.0
+

@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 21:49:16 -0700
+Subject: [PATCH 30/30] bootstage: mark the steps between main_loop and the
+ kernel
+
+Add marks after preboot, before autoboot, around the extlinux/PXE menu
+and after the kernel is loaded, so the time between main_loop and
+bootm_start can be split into USB start, countdown, boot device scan,
+menu and file loading.
+---
+ boot/pxe_utils.c | 4 ++++
+ common/main.c    | 5 ++++-
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
+index d13c47dd..bf37bf7a 100644
+--- a/boot/pxe_utils.c
++++ b/boot/pxe_utils.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <common.h>
++#include <bootstage.h>
+ #include <command.h>
+ #include <dm.h>
+ #include <env.h>
+@@ -528,6 +529,7 @@ static int label_boot(struct pxe_context *ctx, struct pxe_label *label)
+ 		       label->name);
+ 		return 1;
+ 	}
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "kernel loaded");
+ 
+ 	kernel_addr = env_get("kernel_addr_r");
+ 	/* for FIT, append the configuration identifier */
+@@ -1551,8 +1553,10 @@ void handle_pxe_menu(struct pxe_context *ctx, struct pxe_menu *cfg)
+ 	if (!m)
+ 		return;
+ 
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "pxe menu");
+ 	err = menu_get_choice(m, &choice);
+ 	menu_destroy(m);
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "pxe chosen");
+ 
+ 	/*
+ 	 * err == 1 means we got a choice back from menu_get_choice.
+diff --git a/common/main.c b/common/main.c
+index 7c70de2e..59509748 100644
+--- a/common/main.c
++++ b/common/main.c
+@@ -49,8 +49,10 @@ void main_loop(void)
+ 
+ 	cli_init();
+ 
+-	if (IS_ENABLED(CONFIG_USE_PREBOOT))
++	if (IS_ENABLED(CONFIG_USE_PREBOOT)) {
+ 		run_preboot_environment_command();
++		bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "preboot done");
++	}
+ 
+ 	if (IS_ENABLED(CONFIG_UPDATE_TFTP))
+ 		update_tftp(0UL, NULL, NULL);
+@@ -65,6 +67,7 @@ void main_loop(void)
+ 	if (cli_process_fdt(&s))
+ 		cli_secure_boot_cmd(s);
+ 
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "autoboot");
+ 	autoboot_command(s);
+ 
+ 	cli_loop();
+-- 
+2.56.0
+

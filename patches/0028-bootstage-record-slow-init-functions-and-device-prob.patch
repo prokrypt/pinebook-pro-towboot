@@ -1,0 +1,217 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 21:49:16 -0700
+Subject: [PATCH 28/30] bootstage: record slow init functions and device probes
+
+To find out where U-Boot proper spends its time before main_loop,
+time every function run by initcall_run_list() and every device probe
+(driver probe + uclass post-probe). Anything that takes at least 5 ms
+becomes an accum record: "f 0x<addr>" / "r 0x<addr>" for init
+functions before / after relocation (link-time address, to look up in
+System.map) and "p <device>" for probes. With BOOTSTAGE_FDT they reach
+Linux in /proc/device-tree/bootstage.
+
+Before relocation the timings are kept in a small table in .data
+(there is no BSS yet) and turned into records once U-Boot has
+relocated: bootstage_relocate() copies record names into space sized by
+reserve_bootstage(), so names added between the two would overflow it.
+---
+ common/bootstage.c    | 50 +++++++++++++++++++++++++++++++++++++++++++
+ drivers/core/device.c |  8 +++++++
+ include/bootstage.h   | 37 ++++++++++++++++++++++++++++++++
+ include/initcall.h    |  8 +++++++
+ 4 files changed, 103 insertions(+)
+
+diff --git a/common/bootstage.c b/common/bootstage.c
+index 326c40f1..8dacc039 100644
+--- a/common/bootstage.c
++++ b/common/bootstage.c
+@@ -218,6 +218,56 @@ uint32_t bootstage_accum(enum bootstage_id id)
+ 	return duration;
+ }
+ 
++#ifndef CONFIG_SPL_BUILD
++enum {
++	SLOW_MIN_US	= 5000,
++	SLOW_MAX	= 48,
++	SLOW_NAME_LEN	= 24,
++};
++
++/* In .data, so it can be written before relocation and moves along with it */
++static struct {
++	char name[SLOW_NAME_LEN];
++	ulong us;
++} slow_pending[SLOW_MAX] __section(".data");
++static int slow_count __section(".data");
++static int slow_recorded __section(".data");
++
++void bootstage_slow(const char *prefix, const char *what, ulong start_us)
++{
++	struct bootstage_data *data = gd->bootstage;
++	ulong us = timer_get_boot_us() - start_us;
++
++	if (us >= SLOW_MIN_US && slow_count < SLOW_MAX) {
++		snprintf(slow_pending[slow_count].name, SLOW_NAME_LEN, "%s%s",
++			 prefix, what);
++		slow_pending[slow_count].us = us;
++		slow_count++;
++	}
++	if (!(gd->flags & GD_FLG_RELOC) || !data)
++		return;
++	while (slow_recorded < slow_count) {
++		struct bootstage_record *rec;
++
++		rec = ensure_id(data, data->next_id++);
++		if (!rec)
++			return;
++		rec->name = slow_pending[slow_recorded].name;
++		rec->start_us = 1;	/* makes it an 'accum' record */
++		rec->time_us = slow_pending[slow_recorded].us;
++		slow_recorded++;
++	}
++}
++
++void bootstage_initcall(ulong fn, ulong start_us)
++{
++	char addr[20];
++
++	snprintf(addr, sizeof(addr), "0x%lx", fn);
++	bootstage_slow(gd->flags & GD_FLG_RELOC ? "r " : "f ", addr, start_us);
++}
++#endif
++
+ /**
+  * Get a record name as a printable string
+  *
+diff --git a/drivers/core/device.c b/drivers/core/device.c
+index 6e26b64f..e181705a 100644
+--- a/drivers/core/device.c
++++ b/drivers/core/device.c
+@@ -9,6 +9,7 @@
+  */
+ 
+ #include <common.h>
++#include <bootstage.h>
+ #include <cpu_func.h>
+ #include <event.h>
+ #include <log.h>
+@@ -480,6 +481,7 @@ static int device_get_dma_constraints(struct udevice *dev)
+ int device_probe(struct udevice *dev)
+ {
+ 	const struct driver *drv;
++	__maybe_unused ulong start_us;
+ 	int ret;
+ 
+ 	if (!dev)
+@@ -579,6 +581,9 @@ int device_probe(struct udevice *dev)
+ 			goto fail;
+ 	}
+ 
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++	start_us = timer_get_boot_us();
++#endif
+ 	if (drv->probe) {
+ 		ret = drv->probe(dev);
+ 		if (ret)
+@@ -588,6 +593,9 @@ int device_probe(struct udevice *dev)
+ 	ret = uclass_post_probe_device(dev);
+ 	if (ret)
+ 		goto fail_uclass;
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++	bootstage_slow("p ", dev->name, start_us);
++#endif
+ 
+ 	if (dev->parent && device_get_uclass_id(dev) == UCLASS_PINCTRL) {
+ 		ret = pinctrl_select_state(dev, "default");
+diff --git a/include/bootstage.h b/include/bootstage.h
+index 685939cc..4a53b065 100644
+--- a/include/bootstage.h
++++ b/include/bootstage.h
+@@ -331,6 +331,34 @@ uint32_t bootstage_start(enum bootstage_id id, const char *name);
+  */
+ uint32_t bootstage_accum(enum bootstage_id id);
+ 
++/**
++ * bootstage_slow() - record something in U-Boot proper that took a while
++ *
++ * Anything that took at least 5 ms becomes an 'accum' record named
++ * "<prefix><what>", so it shows up in the device tree next to dm_f/dm_r.
++ * Before relocation it is only noted down (in .data: there is no BSS yet)
++ * and turned into a record at the first call after relocation:
++ * bootstage_relocate() copies record names into space sized by
++ * reserve_bootstage(), so names added between the two would overflow it.
++ *
++ * @prefix:	Kind of thing, e.g. "p " for a device probe
++ * @what:	Its name (copied)
++ * @start_us:	When it started, from timer_get_boot_us()
++ */
++void bootstage_slow(const char *prefix, const char *what, ulong start_us);
++
++/**
++ * bootstage_initcall() - record an init function that took a while
++ *
++ * For initcall_run_list(): records "f 0x<addr>" (before relocation) or
++ * "r 0x<addr>" (after) with bootstage_slow(). The address is the link-time
++ * one, to look up in u-boot.map / System.map.
++ *
++ * @fn:		Link-time address of the init function
++ * @start_us:	When it started, from timer_get_boot_us()
++ */
++void bootstage_initcall(ulong fn, ulong start_us);
++
+ /* Print a report about boot time */
+ void bootstage_report(void);
+ 
+@@ -430,6 +458,15 @@ static inline uint32_t bootstage_accum(enum bootstage_id id)
+ 	return 0;
+ }
+ 
++static inline void bootstage_slow(const char *prefix, const char *what,
++				  ulong start_us)
++{
++}
++
++static inline void bootstage_initcall(ulong fn, ulong start_us)
++{
++}
++
+ static inline int bootstage_stash(void *base, int size)
+ {
+ 	return 0;	/* Pretend to succeed */
+diff --git a/include/initcall.h b/include/initcall.h
+index 69ce2680..29317992 100644
+--- a/include/initcall.h
++++ b/include/initcall.h
+@@ -13,6 +13,7 @@ typedef int (*init_fnc_t)(void);
+ #include <efi.h>
+ #endif
+ #include <asm/global_data.h>
++#include <bootstage.h>
+ 
+ /*
+  * To enable debugging. add #define DEBUG at the top of the including file.
+@@ -25,6 +26,7 @@ static inline int initcall_run_list(const init_fnc_t init_sequence[])
+ 
+ 	for (init_fnc_ptr = init_sequence; *init_fnc_ptr; ++init_fnc_ptr) {
+ 		unsigned long reloc_ofs = 0;
++		__maybe_unused ulong start_us;
+ 		int ret;
+ 
+ 		/*
+@@ -43,7 +45,13 @@ static inline int initcall_run_list(const init_fnc_t init_sequence[])
+ 		else
+ 			debug("initcall: %p\n", (char *)*init_fnc_ptr - reloc_ofs);
+ 
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++		start_us = timer_get_boot_us();
++#endif
+ 		ret = (*init_fnc_ptr)();
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++		bootstage_initcall((ulong)*init_fnc_ptr - reloc_ofs, start_us);
++#endif
+ 		if (ret) {
+ 			printf("initcall sequence %p failed at call %p (err=%d)\n",
+ 			       init_sequence,
+-- 
+2.56.0
+

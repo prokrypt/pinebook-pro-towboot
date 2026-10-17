@@ -1,0 +1,121 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 21:59:37 -0700
+Subject: [PATCH 31/32] bootstage: split slow device probes further
+
+Time the parts of device_probe() for each device on its own, so it is
+clear where a slow probe spends its time: "s <dev>" for its pinctrl
+setup, "c <dev>" for its assigned clocks (before probe), "x <dev>" for
+everything from after its parents are probed up to the driver probe,
+and "p <dev>" for the driver probe plus uclass post-probe. Also time each
+assigned-clock-rates entry ("k <dev>#<index>"). Only times of 5 ms or
+more are recorded (see bootstage_slow()).
+---
+ drivers/clk/clk-uclass.c | 10 ++++++++++
+ drivers/core/device.c    | 24 ++++++++++++++++++++++++
+ 2 files changed, 34 insertions(+)
+
+diff --git a/drivers/clk/clk-uclass.c b/drivers/clk/clk-uclass.c
+index dc3e9d6a..ec03d44e 100644
+--- a/drivers/clk/clk-uclass.c
++++ b/drivers/clk/clk-uclass.c
+@@ -9,6 +9,7 @@
+ #define LOG_CATEGORY UCLASS_CLK
+ 
+ #include <common.h>
++#include <bootstage.h>
+ #include <clk.h>
+ #include <clk-uclass.h>
+ #include <dm.h>
+@@ -295,6 +296,8 @@ static int clk_set_default_rates(struct udevice *dev,
+ 	int size;
+ 	int ret = 0;
+ 	u32 *rates = NULL;
++	__maybe_unused ulong rate_us;
++	__maybe_unused char what[32];
+ 
+ 	size = dev_read_size(dev, "assigned-clock-rates");
+ 	if (size < 0)
+@@ -314,6 +317,9 @@ static int clk_set_default_rates(struct udevice *dev,
+ 		if (!rates[index])
+ 			continue;
+ 
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++		rate_us = timer_get_boot_us();
++#endif
+ 		ret = clk_get_by_indexed_prop(dev, "assigned-clocks",
+ 					      index, &clk);
+ 		/*
+@@ -348,6 +354,10 @@ static int clk_set_default_rates(struct udevice *dev,
+ 			return PTR_ERR(c);
+ 
+ 		ret = clk_set_rate(c, rates[index]);
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++		snprintf(what, sizeof(what), "%s#%d", dev->name, index);
++		bootstage_slow("k ", what, rate_us);
++#endif
+ 
+ 		if (ret < 0) {
+ 			dev_warn(dev,
+diff --git a/drivers/core/device.c b/drivers/core/device.c
+index e181705a..704b1865 100644
+--- a/drivers/core/device.c
++++ b/drivers/core/device.c
+@@ -518,6 +518,10 @@ int device_probe(struct udevice *dev)
+ 	}
+ 
+ 	dev_or_flags(dev, DM_FLAG_ACTIVATED);
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++	/* from here on: this device only, not its parents */
++	start_us = timer_get_boot_us();
++#endif
+ 
+ 	if (CONFIG_IS_ENABLED(POWER_DOMAIN) && dev->parent &&
+ 	    (device_get_uclass_id(dev) != UCLASS_POWER_DOMAIN) &&
+@@ -543,10 +547,19 @@ int device_probe(struct udevice *dev)
+ 	 * associated uclass methods have not yet been called.
+ 	 */
+ 	if (dev->parent && device_get_uclass_id(dev) != UCLASS_PINCTRL) {
++		__maybe_unused ulong pinctrl_us = 0;
++
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++		pinctrl_us = timer_get_boot_us();
++#endif
++
+ 		ret = pinctrl_select_state(dev, "default");
+ 		if (ret && ret != -ENOSYS)
+ 			log_debug("Device '%s' failed to configure default pinctrl: %d (%s)\n",
+ 				  dev->name, ret, errno_str(ret));
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++		bootstage_slow("s ", dev->name, pinctrl_us);
++#endif
+ 	}
+ 
+ 	if (CONFIG_IS_ENABLED(IOMMU) && dev->parent &&
+@@ -576,12 +589,23 @@ int device_probe(struct udevice *dev)
+ 		 * Process 'assigned-{clocks/clock-parents/clock-rates}'
+ 		 * properties
+ 		 */
++		__maybe_unused ulong clk_us = 0;
++
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++		clk_us = timer_get_boot_us();
++#endif
++
+ 		ret = clk_set_defaults(dev, CLK_DEFAULTS_PRE);
+ 		if (ret)
+ 			goto fail;
++#if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++		bootstage_slow("c ", dev->name, clk_us);
++#endif
+ 	}
+ 
+ #if defined(CONFIG_BOOTSTAGE) && !defined(CONFIG_SPL_BUILD)
++	/* everything before the driver's own probe */
++	bootstage_slow("x ", dev->name, start_us);
+ 	start_us = timer_get_boot_us();
+ #endif
+ 	if (drv->probe) {
+-- 
+2.56.0
+

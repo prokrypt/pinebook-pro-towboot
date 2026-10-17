@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Sat, 17 Oct 2026 00:04:51 -0700
+Subject: [PATCH] board_f: rk3399: turn the data cache on before relocation
+
+With only the instruction cache on, board_init_f() still took 0.62 s
+on a Pinebook Pro, most of it initf_dm() and serial_init() walking the
+device tree with every data access going to DRAM uncached.
+
+U-Boot proper runs from DRAM, so in initf_icache() also put temporary
+page tables at a free DRAM address (the one SPL used) and enable the
+data cache. Those tables must not stay in use: the address is
+overwritten once a kernel is loaded. So initf_dcache_off(), the last
+init function before relocation, flushes and disables the cache and
+clears tlb_fillptr, and initr_caches() then sets the cache up as usual
+with page tables in the memory reserved by arch_reserve_mmu().
+
+RK3399 only for now (the address is board specific).
+---
+ common/board_f.c | 44 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 44 insertions(+)
+
+diff --git a/common/board_f.c b/common/board_f.c
+index 297abcae..850e1a74 100644
+--- a/common/board_f.c
++++ b/common/board_f.c
+@@ -45,6 +45,7 @@
+ #include <asm/cache.h>
+ #include <asm/global_data.h>
+ #include <asm/io.h>
++#include <asm/system.h>
+ #include <asm/sections.h>
+ #include <dm/root.h>
+ #include <linux/errno.h>
+@@ -286,6 +287,9 @@ __weak int init_func_vid(void)
+ }
+ #endif
+ 
++/* Free DRAM, 64 KB aligned, for the page tables used before relocation */
++#define EARLY_PGTABLE_ADDR	0x03100000
++
+ #if defined(CONFIG_ARM64) && !CONFIG_IS_ENABLED(SYS_ICACHE_OFF)
+ /*
+  * U-Boot proper starts with both caches off and only turns them on after
+@@ -299,10 +303,46 @@ __weak int init_func_vid(void)
+ static int initf_icache(void)
+ {
+ 	icache_enable();
++#if defined(CONFIG_ROCKCHIP_RK3399) && !CONFIG_IS_ENABLED(SYS_DCACHE_OFF)
++	/*
++	 * The data cache too: U-Boot runs from DRAM, so put temporary page
++	 * tables in a free spot of it (the same one SPL used) and turn the
++	 * cache on. initf_dcache_off() flushes and turns it off again
++	 * before relocation, and initr_caches() then sets it up as usual
++	 * with page tables in reserved memory: this spot gets overwritten
++	 * once a kernel is loaded.
++	 */
++	gd->arch.tlb_size = PGTABLE_SIZE;
++	gd->arch.tlb_addr = EARLY_PGTABLE_ADDR;
++	dcache_enable();
++#endif
++
++	return 0;
++}
++
++#if defined(CONFIG_ROCKCHIP_RK3399) && !CONFIG_IS_ENABLED(SYS_DCACHE_OFF)
++static int initf_dcache_off(void)
++{
++	/* Flushes the cache to DRAM, so relocate_code() sees everything */
++	dcache_disable();
++	/*
++	 * Make initr_caches() build new page tables at gd->arch.tlb_addr.
++	 * setup_reloc() has already copied gd to new_gd, which is the one
++	 * used after relocation, so clear the fields there too: with the
++	 * early fill pointer left in it, mmu_setup() skipped building the
++	 * tables and turned the MMU on with whatever was in that memory.
++	 */
++	gd->arch.tlb_fillptr = 0;
++	gd->arch.tlb_emerg = 0;
++	if (gd->new_gd) {
++		gd->new_gd->arch.tlb_fillptr = 0;
++		gd->new_gd->arch.tlb_emerg = 0;
++	}
+ 
+ 	return 0;
+ }
+ #endif
++#endif
+ 
+ static int setup_mon_len(void)
+ {
+@@ -1010,6 +1050,10 @@ static const init_fnc_t init_sequence_f[] = {
+ 	 * watchdog device is not serviced is as small as possible.
+ 	 */
+ 	cyclic_unregister_all,
++#if defined(CONFIG_ARM64) && !CONFIG_IS_ENABLED(SYS_ICACHE_OFF) && \
++	defined(CONFIG_ROCKCHIP_RK3399) && !CONFIG_IS_ENABLED(SYS_DCACHE_OFF)
++	initf_dcache_off,
++#endif
+ #if !defined(CONFIG_ARM) && !defined(CONFIG_SANDBOX) && \
+ 		!CONFIG_IS_ENABLED(X86_64)
+ 	jump_to_copy,
+-- 
+2.56.0
+

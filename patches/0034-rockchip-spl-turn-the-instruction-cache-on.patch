@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 22:53:19 -0700
+Subject: [PATCH] rockchip: spl: turn the instruction cache on
+
+SPL runs with both caches off, so every instruction is fetched from
+DRAM. On a Pinebook Pro (RK3399) the time from the end of TPL to the
+start of U-Boot proper was 3.9 s, most of it SPL reading U-Boot and
+TF-A (1.2 MB) from SPI flash in a polling loop: raising the SPI clock
+from 10 to 25 MHz barely changed it.
+
+On ARMv8 the instruction cache works with the MMU off, so enable it at
+the start of board_init_f(). Turn it off and invalidate it again in
+bl31_entry(), next to the existing dcache_disable(), so TF-A is entered
+in the same state as before.
+---
+ arch/arm/mach-rockchip/spl.c | 12 ++++++++++++
+ common/spl/spl_atf.c         |  3 +++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/arch/arm/mach-rockchip/spl.c b/arch/arm/mach-rockchip/spl.c
+index 30be6404..12cea315 100644
+--- a/arch/arm/mach-rockchip/spl.c
++++ b/arch/arm/mach-rockchip/spl.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include <common.h>
++#include <cpu_func.h>
+ #include <debug_uart.h>
+ #include <dm.h>
+ #include <hang.h>
+@@ -112,6 +113,17 @@ void board_init_f(ulong dummy)
+ {
+ 	int ret;
+ 
++#if defined(CONFIG_ARM64) && !CONFIG_IS_ENABLED(SYS_ICACHE_OFF)
++	/*
++	 * SPL runs with both caches off, so every instruction is fetched
++	 * from DRAM. That made it take seconds on RK3399, most of it in
++	 * the loop that reads U-Boot and TF-A from SPI flash. The
++	 * instruction cache works with the MMU off; it is turned off again
++	 * before TF-A is entered (bl31_entry()).
++	 */
++	icache_enable();
++#endif
++
+ #ifdef CONFIG_DEBUG_UART
+ 	/*
+ 	 * Debug UART can be used from here if required:
+diff --git a/common/spl/spl_atf.c b/common/spl/spl_atf.c
+index 2c102528..645bfd6b 100644
+--- a/common/spl/spl_atf.c
++++ b/common/spl/spl_atf.c
+@@ -205,6 +205,9 @@ static void bl31_entry(uintptr_t bl31_entry, uintptr_t bl32_entry,
+ 
+ 	raw_write_daif(SPSR_EXCEPTION_MASK);
+ 	dcache_disable();
++	/* Hand over with the instruction cache off as well, as before */
++	icache_disable();
++	invalidate_icache_all();
+ 
+ 	atf_entry(bl31_params, (void *)fdt_addr);
+ }
+-- 
+2.56.0
+

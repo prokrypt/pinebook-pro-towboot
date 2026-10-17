@@ -4,6 +4,7 @@ A small set of patches on top of [Tow-Boot](https://tow-boot.org) `2023.07-007`,
 
 What it fixes or adds:
 
+- **Much faster start** (pbp2y): power-on to kernel start in **5.3 s** instead of 15.3 s on my Pinebook Pro, with no countdown. Most of it comes from running the boot stages with the CPU caches on. See [Faster start-up](#faster-start-up-pbp2y-patches-00260038).
 - **No more garbage on screen at boot.** The screen stays dark from "Starting kernel" until the kernel's display driver turns the panel on (about 3 s into boot), instead of showing garbage in between.
 - **A dimmer Tow-Boot screen.** The stock build runs the backlight at 100%.
 - **`/boot` on btrfs** (pbp2c). Tow-Boot can read kernels straight from a btrfs root, including zstd-compressed files, so a snapshot rollback brings the kernel back too.
@@ -14,7 +15,8 @@ What it fixes or adds:
 - **The touchpad no longer freezes the keyboard** in the Tow-Boot menu (pbp2i; a bug in stock Tow-Boot since 2021, [Tow-Boot#57](https://github.com/Tow-Boot/Tow-Boot/issues/57)).
 - **Faster eMMC** (pbp2n): HS200 at up to 200 MHz instead of 25 MHz, so the kernel and initramfs load faster.
 - **Faster SD card** (pbp2g and later): 50 MHz instead of 20 MHz in Tow-Boot, so booting from SD loads about 65% faster.
-- A 1 s boot menu countdown instead of 2 s.
+- **No countdown** (pbp2y): hold **ESC** while powering on to get the Tow-Boot menu. (pbp1 to pbp2n: 1 s instead of 2 s.)
+- **Boot timing** (pbp2y): each boot stage's time is handed to Linux in `/proc/device-tree/bootstage`; `scripts/bootstage.sh` prints it.
 
 Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot `2023.07-007`.
 
@@ -24,7 +26,9 @@ Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot
 
 | Version | Status | What's in it |
 |---|---|---|
-| **007-pbp2n** | **Tested**: in use on my Pinebook Pro since 2026-10-15 | pbp2m + **eMMC in HS200** (patch 0024) |
+| **007-pbp2y** | **Tested**: in use on my Pinebook Pro since 2026-10-17 | pbp2n + **faster start-up** (patches 0026–0038, power-on → kernel 15.3 → 5.3 s), **no countdown**, boot timing |
+| ~~007-pbp2w/x~~ | Not released: black screen from the chip, needed a maskrom recovery | first version of patch 0038 (see below) |
+| 007-pbp2n | Tested: in use on my Pinebook Pro 2026-10-15 to 10-17 | pbp2m + **eMMC in HS200** (patch 0024) |
 | 007-pbp2m | Tested 2026-10-15 | pbp2k + **big-core and GPU regulators off in suspend** (TF-A patch `tfa-0001`) |
 | ~~007-pbp2l~~ | Not released: its TF-A change never took effect (see below) | pbp2k + first try of the suspend change |
 | 007-pbp2k | Tested: in use on my Pinebook Pro 2026-10-13 to 10-15 | pbp2j + **external USB keyboards work** next to the internal one (0023, fixes Tow-Boot#153) |
@@ -97,15 +101,17 @@ Notes:
 - As with ext4, Tow-Boot only scans partitions with the MBR **bootable flag**. If none has the flag, it only scans partition 1.
 - **Tested:** booted a kernel, initramfs and dtb from a zstd-compressed btrfs (single partition, top-level subvolume), including an `extlinux.conf` stored inline and zstd-compressed by the kernel (the 0007 case). Booting from a non-top-level default subvolume like `@` hasn't been tested yet.
 
-### Boot timing (not in any working build yet)
+### Boot timing (pbp2y)
 
-pbp2 had `CONFIG_BOOTSTAGE` and `CONFIG_BOOTSTAGE_FDT` on; pbp2c doesn't, since pbp2 didn't start (for the stack reason above, not because of this). With them, Tow-Boot records the time of each boot stage and adds it to the device tree it hands to the kernel. Nothing is printed on screen. After boot:
+pbp2y records the time of each boot stage and adds it to the device tree it hands to the kernel. Nothing is printed on screen. After boot:
 
 ```sh
 scripts/bootstage.sh
 ```
 
-prints each stage in milliseconds since power-on, read from `/proc/device-tree/bootstage/`. Handy for comparing, say, `Image` against `Image.gz`, or ext4 against btrfs.
+prints each stage in milliseconds since power-on, read from `/proc/device-tree/bootstage/`: TPL, SPL (four timestamps), U-Boot's start, `main_loop`, the USB start, the extlinux menu, the kernel load and the hand-over. Below the marks are "accumulated" lines for every U-Boot init function (`f`/`r 0x<address>`, look it up in U-Boot's `System.map`) and device probe (`p`, `x`, `s`, `c`, `k` + device) that took 5 ms or more. In the Firmware Console, `bootstage report` shows the same table. The timer starts with TPL, so the boot ROM's own work before it isn't included (about 0.7 s judging by the arch counter).
+
+This needed a few changes of its own: `CONFIG_BOOTSTAGE`, `_FDT` and `_STASH` (TPL hands its records on at `0x03000000`), patches 0028/0030/0031 (finer records), 0035 (SPL timestamps at `0x03001000`: SPL's own bootstage records never reached U-Boot, cause not found) and 0036 (8 KB of room for the records in the kernel's device tree; without it the oldest ones were dropped). 0028/0030/0031/0035 are measuring aids; a build without them should be just as fast, but that's untested.
 
 ### Faster USB start (pbp2f, patch 0008)
 
@@ -181,6 +187,36 @@ HS200 in U-Boot followed by HS200 in Linux works.
 
 With the eMMC at HS200, reading the raw 48 MB kernel is faster than unpacking it. U-Boot's gunzip and its btrfs zstd decompression are both slow. To keep `/boot` uncompressed on btrfs, run `chattr +m /boot` (new files inherit it). Then rewrite existing files with `cp --reflink=never` and `mv`; a plain `cp` reflinks and keeps the old compressed data.
 
+### Faster start-up (pbp2y, patches 0026–0038)
+
+Measured with the boot timing above (pbp2n has none: its 15.3 s is the arch counter at kernel start, and its stage times come from intermediate test builds). Power-on → kernel start, my Pinebook Pro:
+
+| Stage | pbp2n | pbp2y |
+|---|---|---|
+| end of TPL (DRAM init) | | 0.15 s |
+| boot ROM loads SPL | | 0.40 s |
+| SPL reads U-Boot + TF-A from SPI, TF-A | ~3.9 s together | 0.49 s |
+| U-Boot before relocation | ~2.0 s | 0.06 s |
+| U-Boot after relocation (drivers, display) | ~1.7 s | 0.62 s |
+| USB keyboard start | 0.5 s | 0.51 s |
+| countdown + finding extlinux.conf | 1.5 s | 0.51 s |
+| extlinux menu | 3 s (`TIMEOUT 30`) | 1.06 s (`TIMEOUT 10`) |
+| kernel load (49 MB `Image`) + hand-over | ~1.1 s | 0.65 s |
+| **power-on → kernel (arch counter)** | **15.3 s** | **5.3 s** |
+
+What each patch does:
+
+- **0032, 0034: instruction cache on early.** U-Boot proper and SPL start with both CPU caches off (that's how the boot ROM and TF-A hand over), and U-Boot only turns them on after relocation. Without the instruction cache every instruction is fetched from DRAM. 0032 calls `icache_enable()` as U-Boot's first init function, 0034 at the start of SPL (and turns it off again before TF-A). This works with the MMU off on ARMv8.
+- **0037, 0038: data cache on early (RK3399).** SPL (after `spl_early_init()`) and U-Boot proper (first thing) get page tables at a free DRAM address (`0x03100000`) and call `dcache_enable()`. SPL's read of the 1.2 MB FIT went from 1.50 s to 0.46 s, U-Boot's pre-relocation part from 0.62 s to 0.06 s. SPL's existing `bl31_entry()` flushes and disables the cache before TF-A; U-Boot flushes and disables it as the last step before relocation and then sets the cache up as usual.
+  The first version of 0038 cleared the page-table fill pointer only in the old global data, after `setup_reloc()` had already copied it, so the relocated U-Boot turned the MMU on without building page tables: black screen. It had passed a chainload test, because the chainloaded U-Boot found the running one's valid tables at the same address. pbp2y clears it in the copy too, and was chainload-tested with a 1 MB bigger malloc pool so that its tables landed elsewhere.
+- **0029: frame buffer cleared after relocation.** Tow-Boot clears every reserved frame buffer in `alloc_fb()` (against garbage after a warm reset). Before relocation, with the cache off, that was 2 × 1080p buffers at ~21 MB/s: 0.86 s. It now happens in the video uclass `pre_probe`, with the cache on, followed by a cache flush.
+- **0033: CRU assigned clocks dropped from U-Boot's device tree.** `clk_set_defaults()` processes the CRU's 16 `assigned-clocks` twice (before and after probe) and finds entry *n* by walking entries 0..*n*, each with a phandle search through the whole device tree: 2 × 0.34 s, all for nothing (`rk3399_clk_set_rate()` returns 0 for every one of them, and SPL strips the properties anyway). Linux uses its own device tree.
+- **0027: kernel at `0x02200000`.** `booti` moves an arm64 `Image` to a 2 MB boundary; with `kernel_addr_r` at `0x02080000` it moved every 49 MB kernel before starting it (0.54 s).
+- **0026: SPI flash at 25 MHz** instead of 10 MHz (also `CONFIG_SF_DEFAULT_SPEED`). Measured on my board in U-Boot: reads correct up to 33 MHz, wrong at 49.5 MHz (the controller divides 198 MHz by even numbers). A small gain on its own: most of the slow SPI read was SPL running without caches.
+- `SYS_MALLOC_CLEAR_ON_INIT` off (U-Boot no longer zeroes its 32 MB heap, 42 ms) and `BOOTDELAY 0`.
+
+None of this has been sent upstream. 0029/0032/0033/0034/0037/0038 would need cleaning up first (0037/0038 are RK3399-only and use a fixed address).
+
 ### Device-tree overlays
 
 `CONFIG_OF_LIBFDT_OVERLAY=y`, so `FDTOVERLAYS /path/a.dtbo /path/b.dtbo` in an `extlinux.conf` entry is applied. Stock 2023.07-007 is built without it and silently ignores the line (the firmware contains the message `config with overlays but CONFIG_OF_LIBFDT_OVERLAY not set`). Overlays can only add or change properties, not delete them. If you need to delete one, merge the dtb yourself with `fdtoverlay` + `fdtput -d`.
@@ -206,7 +242,7 @@ sudo cmp -n $(stat -c%s Tow-Boot.spi.bin) /dev/mtd0ro Tow-Boot.spi.bin && echo O
 
 To undo: `sudo flashcp -v mtd0-backup.img /dev/mtd0`.
 
-**If you ever saved Tow-Boot settings** (`saveenv` in its console, or `fw_setenv` from Linux), they live in the SPI flash at `0xFE0000`, which flashing doesn't touch, and they override the new build's defaults: you'd keep your old `preboot` (no USB speed-up) and `bootdelay`. After flashing, reset them from the Firmware Console with `env default -a; saveenv`. If you never saved settings, the area is blank (`0xFF`) and there's nothing to do.
+**If you ever saved Tow-Boot settings** (`saveenv` in its console, or `fw_setenv` from Linux), they live in the SPI flash at `0xFE0000`, which flashing doesn't touch, and they override the new build's defaults: you'd keep your old `preboot` (no USB speed-up) and `bootdelay` (pbp2y's 0 s wouldn't apply). After flashing, reset them from the Firmware Console with `env default -a; saveenv`. If you never saved settings, the area is blank (`0xFF`) and there's nothing to do.
 
 ### From an SD card
 
@@ -240,7 +276,7 @@ These hold for stock Tow-Boot 2023.07-007 and this build:
 ## Building
 
 ```sh
-scripts/build.sh pbp2n     # or pbp2m, pbp2l, pbp2k, pbp2j, pbp2i, pbp2h, pbp2f, pbp2c, pbp1
+scripts/build.sh pbp2y     # or pbp2n, pbp2m, pbp2l, pbp2k, pbp2j, pbp2i, pbp2h, pbp2f, pbp2c, pbp1
 ```
 
 It checks out Tow-Boot `release-2023.07-007` (which builds [Tow-Boot/U-Boot](https://github.com/Tow-Boot/U-Boot) tag `tb-2023.07-007`) into `build/`, applies the patches and config from `nix/<variant>.nix`, puts the results in `out/<variant>/`, and runs `scripts/check-layout.sh` on the image. It uses `nix-build` if you have Nix. Otherwise it runs Nix in a `podman`/`docker` container, with the Nix store kept in a volume called `towboot-nix`. It cross-compiles on x86_64; the first build takes a while.

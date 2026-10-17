@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 21:49:16 -0700
+Subject: [PATCH 29/30] video: clear the frame buffer after relocation, with
+ the cache on
+
+Tow-Boot clears each reserved frame buffer in alloc_fb() so that data
+left over from a warm reset doesn't show up. alloc_fb() runs from
+reserve_video() before relocation, with the data cache off: on a
+Pinebook Pro (RK3399, two VOPs with 1920x1080 buffers) that memset took
+0.86 s of every boot. Do the same clear in the uclass pre_probe instead,
+right before the driver starts the display, with the cache on, and
+flush it so the display controller sees it.
+---
+ drivers/video/video-uclass.c | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/video/video-uclass.c b/drivers/video/video-uclass.c
+index 1abb6cfa..afaa2a21 100644
+--- a/drivers/video/video-uclass.c
++++ b/drivers/video/video-uclass.c
+@@ -115,9 +115,6 @@ static ulong alloc_fb(struct udevice *dev, ulong *addrp)
+ 	size = alloc_fb_(plat->align, plat->size, addrp);
+ 	plat->base = *addrp;
+ 
+-	/* Clear the reserved famebuffer; some data might be sticking in from warm reset. */
+-	memset(plat->base, 0x00, size);
+-
+ 	return size;
+ }
+ 
+@@ -467,6 +464,25 @@ int video_default_font_height(struct udevice *dev)
+ }
+ 
+ /* Set up the display ready for use */
++/*
++ * Clear the frame buffer before the driver starts the display: some data
++ * might be sticking in from a warm reset. This used to be done in
++ * alloc_fb(), but that runs before relocation with the data cache off,
++ * where clearing two 1080p frame buffers took 0.86 s on a Pinebook Pro.
++ * Here the cache is on; flush it so the display controller sees the zeros.
++ */
++static int video_pre_probe(struct udevice *dev)
++{
++	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
++
++	if (plat->base && plat->size) {
++		memset((void *)plat->base, 0, plat->size);
++		flush_dcache_range(plat->base, plat->base + plat->size);
++	}
++
++	return 0;
++}
++
+ static int video_post_probe(struct udevice *dev)
+ {
+ 	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
+@@ -582,6 +598,7 @@ UCLASS_DRIVER(video) = {
+ 	.name		= "video",
+ 	.flags		= DM_UC_FLAG_SEQ_ALIAS,
+ 	.post_bind	= video_post_bind,
++	.pre_probe	= video_pre_probe,
+ 	.post_probe	= video_post_probe,
+ 	.priv_auto	= sizeof(struct video_uc_priv),
+ 	.per_device_auto	= sizeof(struct video_priv),
+-- 
+2.56.0
+

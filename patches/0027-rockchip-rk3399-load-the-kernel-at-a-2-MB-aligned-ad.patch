@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 21:36:58 -0700
+Subject: [PATCH 27/28] rockchip: rk3399: load the kernel at a 2 MB aligned
+ address
+
+booti relocates an arm64 Image to a 2 MB aligned address. With
+kernel_addr_r at 0x02080000 it moves every kernel up to 0x02200000
+before starting it: about 49 MB of memmove for a current Arch Linux ARM
+Image. Load it at 0x02200000 directly. The kernel still ends far below
+ramdisk_addr_r (0x08000000).
+---
+ include/configs/rk3399_common.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/configs/rk3399_common.h b/include/configs/rk3399_common.h
+index 0101738..6d29aae 100644
+--- a/include/configs/rk3399_common.h
++++ b/include/configs/rk3399_common.h
+@@ -38,7 +38,7 @@
+ 	"pxefile_addr_r=0x00600000\0" \
+ 	"fdt_addr_r=0x01f00000\0" \
+ 	"fdtoverlay_addr_r=0x02000000\0" \
+-	"kernel_addr_r=0x02080000\0" \
++	"kernel_addr_r=0x02200000\0" \
+ 	"ramdisk_addr_r=0x08000000\0" \
+ 	"kernel_comp_addr_r=0x0a000000\0" \
+ 	"kernel_comp_size=0x2000000\0"
+-- 
+2.56.0
+

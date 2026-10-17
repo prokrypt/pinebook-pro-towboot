@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prokrypt <prokrypt@edited.us>
+Date: Fri, 16 Oct 2026 22:08:21 -0700
+Subject: [PATCH] pinebook-pro: drop the CRU assigned clocks from U-Boot
+ proper's DT
+
+clk_set_defaults() processes the CRU's 16 assigned-clocks twice, before
+and after its probe. clk_get_by_indexed_prop() finds entry n by walking
+entries 0..n of the list, and each step searches the whole device tree
+for the phandle (no live tree), so the cost grows with n squared:
+2 x 0.34 s on a Pinebook Pro, inside serial_initialize() because the
+serial console is the first device to need the CRU after relocation.
+
+All of it is wasted: rk3399_clk_set_rate() returns 0 for every one of
+these clocks (PLLs, PERIHP/PERILP0/PERILP1, CCI, VIO, HDCP, GIC_PRE,
+DDR), and SPL strips the properties anyway (CONFIG_OF_SPL_REMOVE_PROPS).
+Delete them from the U-Boot device tree. Linux has its own.
+---
+ arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi b/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
+index 179e70c2..240f8b35 100644
+--- a/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
++++ b/arch/arm/dts/rk3399-pinebook-pro-u-boot.dtsi
+@@ -21,6 +21,20 @@
+ 	default-brightness-level = <40>;
+ };
+ 
++&cru {
++	/*
++	 * U-Boot proper sets none of these: rk3399_clk_set_rate() returns 0
++	 * for every one of them, and SPL already strips them
++	 * (CONFIG_OF_SPL_REMOVE_PROPS). But clk_set_defaults() runs twice for
++	 * the CRU (before and after probe), and each run looks up entry n by
++	 * walking entries 0..n, each with a phandle search through the whole
++	 * device tree: 16 entries took 2 x 0.34 s. Linux uses its own device
++	 * tree and still gets them.
++	 */
++	/delete-property/ assigned-clocks;
++	/delete-property/ assigned-clock-rates;
++};
++
+ &edp {
+ 	rockchip,panel = <&edp_panel>;
+ };
+-- 
+2.56.0
+
