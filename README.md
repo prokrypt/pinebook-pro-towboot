@@ -20,6 +20,8 @@ What it fixes or adds:
 
 Everything else (boot order, menu, saved settings) is the same as stock Tow-Boot `2023.07-007`.
 
+**DRAM frequency scaling:** the follow-up project [pinebook-pro-towblob](https://github.com/prokrypt/pinebook-pro-towblob) builds on 007-pbp2y with Rockchip's DDR blob and BL31, so the DRAM can drop to 328MHz at idle (~0.4W less). It replaces the boot loader more deeply than this repo does: read its README first.
+
 > Not affiliated with the Tow-Boot project or PINE64. Flashing firmware is at your own risk. Read [Recovery](#recovery) first.
 
 ## Versions
